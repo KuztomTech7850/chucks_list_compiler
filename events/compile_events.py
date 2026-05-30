@@ -1,833 +1,329 @@
-# -*- coding: utf-8 -*-
+"""
+events/compile_events.py
+Role: Compile events_data.csv → chucks_events_final_output.html
+Pipeline stage: COMPILE (runs after preprocess_events_text.py)
+Called by: Chucks_List_Builder.py via subprocess
+
+Design decisions: same as compile_bulletin.py.
+Event-specific: date range display, location field, event anchor/TOC by date+title.
+"""
+
 import csv
 import html
-import os
 import re
 import sys
-import unicodedata
-from collections import OrderedDict
+import textwrap
+from pathlib import Path
 
-# ------------------------------------------------------------
-# INPUT / OUTPUT
-# ------------------------------------------------------------
+SCRIPT_DIR  = Path(__file__).resolve().parent
+PROJ_DIR    = SCRIPT_DIR.parent
+INPUT_CSV   = SCRIPT_DIR / "events_data.csv"
+OUTPUT_DIR  = PROJ_DIR / "ChucksEvents"
+OUTPUT_HTML = SCRIPT_DIR / "chucks_events_final_output.html"
 
-INPUT_FILENAME = "events_data.csv"  # preprocessed CSV
-OUTPUT_FILENAME = "chucks_events_final_output.html"
-
-INTRO_NOTE = ""
-CLOSING_NOTE = ""
-
-# ------------------------------------------------------------
-# TOC CONTROLS
-# ------------------------------------------------------------
-
-INCLUDE_TOC = True
-INCLUDE_ITEM_TOC = True
-INCLUDE_READER_TOC_TOGGLE = True
-DEFAULT_READER_TOC_MODE = "full"  # "full" or "Section"
-
-# ------------------------------------------------------------
-# EVENT SECTIONS
-# ------------------------------------------------------------
-
-SECTION_ORDER = [
-    "Single Events",
-    "Multiple Events",
-    "Recurring Events",
-]
-
-SECTION_ALIASES = {
-    "single": "Single Events",
-    "single event": "Single Events",
-    "single events": "Single Events",
-    "single-event": "Single Events",
-    "multiple": "Multiple Events",
-    "multiple event": "Multiple Events",
-    "multiple events": "Multiple Events",
-    "multiple-event": "Multiple Events",
-    "recurring": "Recurring Events",
-    "recurring event": "Recurring Events",
-    "recurring events": "Recurring Events",
-    "recurring-event": "Recurring Events",
+# Reuse palette and link logic from compile_bulletin.py inline
+# (kept here for self-contained module — no cross-module import needed)
+PALETTE = {
+    "bg":           "#FAF6F0",
+    "surface":      "#F2EDE4",
+    "border":       "#C8B89A",
+    "header_bg":    "#2D5A3D",   # deep sage green for events (distinguishes from bulletin)
+    "header_text":  "#FAF6F0",
+    "section_bg":   "#3D7A52",
+    "section_text": "#FAF6F0",
+    "accent":       "#8B6914",
+    "body_text":    "#2C1E0F",
+    "muted":        "#6E5740",
+    "link":         "#1A4D6E",
+    "toc_bg":       "#EDE5D8",
+    "hr":           "#C8B89A",
 }
 
-DEFAULT_SECTION = "Single Events"
-DEFAULT_TITLE = "UnTitled Event"
-
-# ------------------------------------------------------------
-# HEADER ALIASES
-# ------------------------------------------------------------
-
-HEADER_ALIASES = {
-    "section": "Section",
-    "category": "Section",
-    "catergory": "Section",
-    "group": "Section",
-    "type": "Section",
-    "title": "Title",
-    "subject": "Title",
-    "headline": "Title",
-    "event title": "Title",
-    "text": "Text",
-    "body": "Text",
-    "description": "Text",
-    "content": "Text",
-    "details": "Text",
-    "image": "Image",
-    "image path": "Image",
-    "imagepath": "Image",
-    "img": "Image",
-    "photo": "Image",
-}
-
-# ------------------------------------------------------------
-# HTML SHELL (trimmed; matches May 28 template)
-# ------------------------------------------------------------
-
-HTML_HEAD = """<!DOCTYPE html>
-<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
-<head>
-<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no" />
-<meta http-equiv="X-UA-Compatible" content="IE=edge" />
-<meta name="color-scheme" content="light dark" />
-<meta name="supported-color-schemes" content="light dark" />
-<title>Chucks List Events</title>
-<style type="text/css">
-body, table, td, p, a {
-  margin: 0;
-  padding: 0;
-  -webkit-text-size-adjust: 100% !important;
-  -ms-text-size-adjust: 100% !important;
-  text-size-adjust: 100% !important;
-}
-table {
-  border-collapse: collapse;
-  border-spacing: 0;
-  mso-table-lspace: 0pt;
-  mso-table-rspace: 0pt;
-}
-img {
-  border: 0;
-  outline: none;
-  text-decoration: none;
-  display: block;
-  max-width: 100%;
-  height: auto;
-  -ms-interpolation-mode: bicubic;
-}
-body {
-  width: 100% !important;
-  min-width: 100%;
-  background-color: #f3ede2;
-  color: #201a15;
-  font-family: Arial, Helvetica, sans-serif;
-}
-a {
-  color: #a95c22;
-  text-decoration: underline;
-}
-.wrapper {
-  width: 100%;
-  background-color: #f3ede2;
-}
-.container {
-  width: 100%;
-  max-width: 720px;
-  background-color: #fbf7f0;
-  border: 1px solid #d5cab8;
-}
-.preheader {
-  font-family: Arial, Helvetica, sans-serif;
-  font-size: 14px;
-  line-height: 22px;
-  color: #665b50;
-}
-.hidden-preheader {
-  display: none !important;
-  visibility: hidden;
-  opacity: 0;
-  color: transparent;
-  height: 0;
-  width: 0;
-  overflow: hidden;
-  mso-hide: all;
-  font-size: 1px;
-  line-height: 1px;
-  max-height: 0;
-  max-width: 0;
-}
-.header-band, .footer-band {
-  background-color: #2e3d2f;
-}
-.header-band {
-  border-bottom: 4px solid #b46a2d;
-}
-.footer-band {
-  border-top: 3px solid #b46a2d;
-}
-.eyebrow {
-  font-family: Arial, Helvetica, sans-serif;
-  font-size: 12px;
-  line-height: 18px;
-  text-transform: uppercase;
-  letter-spacing: 1.2px;
-  font-weight: bold;
-  color: #bcc8b0;
-}
-.headline {
-  font-family: Georgia, "Times New Roman", Times, serif;
-  font-size: 30px;
-  line-height: 38px;
-  font-weight: bold;
-  color: #f7f1e6;
-}
-.header-body-copy {
-  font-family: Arial, Helvetica, sans-serif;
-  font-size: 19px;
-  line-height: 30px;
-  color: #ddd2c3;
-}
-.section-label {
-  background-color: #365c61;
-  border-top: 1px solid #284449;
-  border-bottom: 1px solid #284449;
-  font-family: Arial, Helvetica, sans-serif;
-  font-size: 13px;
-  line-height: 18px;
-  text-transform: uppercase;
-  letter-spacing: 1.1px;
-  font-weight: bold;
-  color: #edf5f4;
-}
-.row-white {
-  background-color: #fbf7f0;
-}
-.row-alt {
-  background-color: #f4eee3;
-}
-.section-title {
-  font-family: Arial, Helvetica, sans-serif;
-  font-size: 24px;
-  line-height: 32px;
-  font-weight: bold;
-  color: #18130f;
-}
-.body-copy, .body-copy p, .body-copy li {
-  font-family: Arial, Helvetica, sans-serif;
-  font-size: 20px;
-  line-height: 31px;
-  color: #201a15;
-}
-.small-label, .toc-label {
-  font-family: Arial, Helvetica, sans-serif;
-  font-size: 13px;
-  line-height: 20px;
-  font-weight: bold;
-  color: #4f5e3d;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-}
-.toc-helper {
-  font-family: Arial, Helvetica, sans-serif;
-  font-size: 15px;
-  line-height: 24px;
-  color: #5d5248;
-}
-.callout {
-  background-color: #edf2e7;
-  border-left: 4px solid #6b7c52;
-  border-top: 1px solid #c8d4b8;
-  border-right: 1px solid #c8d4b8;
-  border-bottom: 1px solid #c8d4b8;
-  padding: 16px;
-}
-.footer-copy {
-  font-family: Arial, Helvetica, sans-serif;
-  font-size: 13px;
-  line-height: 21px;
-  color: #bcc8b0;
-}
-.footer-copy a {
-  color: #e59b5d;
-}
-/* Dark mode */
-@media (prefers-color-scheme: dark) {
-  body, .wrapper {
-    background-color: #151513 !important;
-  }
-  .container {
-    background-color: #1d211b !important;
-    border-color: #30342d !important;
-  }
-  .preheader {
-    color: #9b8f81 !important;
-  }
-  .header-band, .footer-band {
-    background-color: #1c251d !important;
-  }
-  .headline {
-    color: #f3eadc !important;
-  }
-  .header-body-copy {
-    color: #c0b3a4 !important;
-  }
-  .section-label {
-    background-color: #244348 !important;
-    border-color: #1a2f33 !important;
-    color: #dbefee !important;
-  }
-  .row-white {
-    background-color: #232923 !important;
-  }
-  .row-alt {
-    background-color: #1d221d !important;
-  }
-  .section-title {
-    color: #f0e0c9 !important;
-  }
-  .body-copy, .body-copy p, .body-copy li {
-    color: #dccfbf !important;
-  }
-  .small-label, .toc-label {
-    color: #a4bb84 !important;
-  }
-  .toc-helper {
-    color: #b7aa9c !important;
-  }
-  .callout {
-    background-color: #1b241c !important;
-    border-left-color: #6b7c52 !important;
-    border-top-color: #31422f !important;
-    border-right-color: #31422f !important;
-    border-bottom-color: #31422f !important;
-  }
-  .hr-rule {
-    border-top-color: #3a4038 !important;
-  }
-  a {
-    color: #eba266 !important;
-  }
-}
-</style>
-</head>
-<body style="margin:0;padding:0;background-color:#f3ede2;">
-<div class="hidden-preheader">Local events and activities from Cortez, Dolores, Mancos, Durango, and surrounding communities.</div>
-<center class="wrapper" style="width:100%;background-color:#f3ede2;">
+EMAIL_CSS = f"""
+  body {{ margin:0; padding:0; background:{PALETTE['bg']};
+    font-family:Georgia,'Times New Roman',serif; }}
+  .wrapper {{ max-width:660px; margin:0 auto; background:{PALETTE['bg']}; }}
+  .header {{ background:{PALETTE['header_bg']}; color:{PALETTE['header_text']};
+    padding:28px 32px 20px 32px; text-align:center; }}
+  .header h1 {{ margin:0 0 4px 0; font-size:28px; font-weight:700; letter-spacing:0.5px; }}
+  .header .issue-date {{ font-size:15px; opacity:0.85; margin:0; }}
+  .toc-box {{ background:{PALETTE['toc_bg']}; border:1px solid {PALETTE['border']};
+    padding:18px 24px; margin:0; }}
+  .toc-box h2 {{ font-size:17px; font-weight:700; margin:0 0 12px 0; color:{PALETTE['body_text']}; }}
+  .toc-box ul {{ margin:0; padding-left:18px; }}
+  .toc-box li {{ margin-bottom:6px; }}
+  .toc-box a {{ color:{PALETTE['link']}; text-decoration:none; font-size:16px; }}
+  .item-block {{ background:{PALETTE['surface']}; border-bottom:1px solid {PALETTE['border']};
+    padding:20px 28px 16px 28px; }}
+  .item-title {{ font-size:20px; font-weight:700; margin:0 0 6px 0; color:{PALETTE['body_text']}; }}
+  .item-meta {{ font-size:14px; color:{PALETTE['muted']}; margin:0 0 12px 0; }}
+  .item-body {{ font-size:18px; line-height:1.75; color:{PALETTE['body_text']}; }}
+  .item-body a {{ color:{PALETTE['link']}; text-decoration:underline; }}
+  .item-image {{ margin:12px 0 0 0; text-align:center; }}
+  .item-image img {{ max-width:100%; height:auto; border-radius:4px;
+    border:1px solid {PALETTE['border']}; }}
+  .footer {{ background:{PALETTE['header_bg']}; color:{PALETTE['header_text']};
+    padding:18px 32px; text-align:center; font-size:14px; }}
+  hr.section-rule {{ border:none; border-top:2px solid {PALETTE['hr']}; margin:0; }}
 """
 
-HTML_FOOT = """
-</center>
-</body>
-</html>
-"""
+_TOKEN_RE = re.compile(
+    r'(https?://[^\s<>"\']{4,}?(?=[.,;:!?)}\]]*(?:\s|$))'
+    r'|[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}(?=[.,;:!?)}\]]*(?:\s|$)))',
+    re.IGNORECASE,
+)
+_URL_RE   = re.compile(r'^https?://', re.IGNORECASE)
+_EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
 
-# ------------------------------------------------------------
-# TEXT UTILITIES
-# ------------------------------------------------------------
 
-TOKEN_RE = re.compile(r"(https?://[^\s]+|mailto:[^\s]+)")
-BULLET_RE = re.compile(r"^[-•\u2022]\s+")
-SUBHEAD_RE = re.compile(r"^[_A-Z0-9 .,:;!?'-]+$")
-
-def clean_text(value):
-    text = "" if value is None else str(value)
-    text = unicodedata.normalize("NFKC", text)
-    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
-
-def normalize_header(key):
-    cleaned = "".join((key or "").strip().lower().split())
-    return HEADER_ALIASES.get(cleaned, cleaned.capitalize())
-
-def slugify(value):
-    text = clean_text(value)
-    text = unicodedata.normalize("NFKD", text)
-    text = text.encode("ascii", "ignore").decode("ascii")
-    text = re.sub(r"[^a-zA-Z0-9]+", "-", text.lower()).strip("-")
-    return text or "item"
-
-def render_inline(text):
-    if not text:
-        return ""
-    parts = TOKEN_RE.split(text)
+def linkify_escaped(escaped_text: str) -> str:
+    parts = _TOKEN_RE.split(escaped_text)
     out = []
-    for i, part in enumerate(parts):
-        if i % 2 == 0:
-            out.append(html.escape(part, quote=False))
-        else:
-            token = part
-            if token.startswith(("http://", "https://", "mailto:")):
-                href = html.escape(token, quote=True)
-                display = html.escape(token.replace("mailto:", ""), quote=False)
-                target = ' target="_blank" rel="noopener noreferrer"' if href.startswith(("http://", "https://")) else ""
-                out.append(f'<a href="{href}"{target} style="color:#a95c22;text-decoration:underline;">{display}</a>')
-            else:
-                out.append(html.escape(token, quote=False))
-    return "".join(out)
-
-def split_blocks(text):
-    lines = (text or "").split("\n")
-    blocks = []
-    current = []
-    for line in lines:
-        if line.strip():
-            current.append(line.rstrip())
-        else:
-            if current:
-                blocks.append(current)
-                current = []
-    if current:
-        blocks.append(current)
-    return blocks
-
-def render_text_to_body_html(text):
-    text = clean_text(text)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    if not text:
-        return ""
-    parts = []
-    for block in split_blocks(text):
-        nonempty = [ln for ln in block if ln.strip()]
-        if nonempty and all(SUBHEAD_RE.match(ln.strip()) for ln in nonempty):
-            heading_text = SUBHEAD_RE.sub("", nonempty[0].strip()).strip() or nonempty[0].strip()
-            parts.append(
-                '<div class="body-copy" style="padding-top:14px;">'
-                '<span class="small-label" style="font-size:13px;line-height:20px;font-weight:bold;color:#4f5e3d;text-transform:uppercase;letter-spacing:0.6px;font-family:Arial, Helvetica, sans-serif;">'
-                f'{html.escape(heading_text, quote=False)}'
-                '</span></div>'
+    for part in parts:
+        clean = part.rstrip('.,;:!?)}\]')
+        trailing = part[len(clean):]
+        if _URL_RE.match(clean):
+            out.append(
+                f'<a href="{clean}" target="_blank" rel="noopener noreferrer">'
+                f'{clean}</a>{trailing}'
             )
+        elif _EMAIL_RE.match(clean):
+            out.append(f'<a href="mailto:{clean}">{clean}</a>{trailing}')
+        else:
+            out.append(part)
+    return "".join(out)
+
+
+def render_body(raw_text: str) -> str:
+    if not raw_text:
+        return ""
+    text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+    blocks = re.split(r"\n{2,}", text.strip())
+    out_parts = []
+    list_buffer = []
+
+    def flush_list():
+        if list_buffer:
+            items = "".join(
+                f'<li style="margin-bottom:6px;">{item}</li>' for item in list_buffer
+            )
+            out_parts.append(
+                f'<ul style="margin:0 0 14px 0;padding-left:22px;">{items}</ul>'
+            )
+            list_buffer.clear()
+
+    for block in blocks:
+        lines = block.strip().split("\n")
+        if not lines:
             continue
-        if nonempty and all(BULLET_RE.match(ln.strip()) for ln in nonempty):
-            items = []
-            for line in nonempty:
-                content = BULLET_RE.sub("", line.strip())
-                if content:
-                    items.append(f'<li style="margin-bottom:8px;">{render_inline(content)}</li>')
-            if items:
-                parts.append(
-                    '<div class="body-copy" style="padding-top:14px;font-size:20px;line-height:31px;color:#201a15;font-family:Arial, Helvetica, sans-serif;">'
-                    '<ul style="margin:0;padding-left:28px;">'
-                    + "".join(items) +
-                    '</ul></div>'
+        list_lines = [l for l in lines if re.match(r'^[\-\*•]\s', l)]
+        head_lines = [l for l in lines if l.startswith("##")]
+        if head_lines and len(head_lines) == len(lines):
+            flush_list()
+            for hl in head_lines:
+                heading_text = hl.lstrip("#").strip()
+                out_parts.append(
+                    f'<h4 style="font-size:17px;font-weight:700;'
+                    f'color:{PALETTE["accent"]};margin:18px 0 6px 0;">'
+                    f'{linkify_escaped(html.escape(heading_text))}</h4>'
                 )
-            continue
-        line_htmls = [render_inline(line.rstrip()) for line in block]
-        parts.append(
-            '<div class="body-copy" style="padding-top:14px;font-size:20px;line-height:31px;color:#201a15;font-family:Arial, Helvetica, sans-serif;">'
-            + "<br>".join(line_htmls) +
-            "</div>"
+        elif list_lines:
+            flush_list()
+            for ll in lines:
+                clean = re.sub(r'^[\-\*•]\s*', '', ll).strip()
+                list_buffer.append(linkify_escaped(html.escape(clean)))
+            flush_list()
+        else:
+            flush_list()
+            inner = "<br>\n".join(
+                linkify_escaped(html.escape(ll)) for ll in lines
+            )
+            out_parts.append(
+                f'<p style="margin:0 0 14px 0;line-height:1.7;">{inner}</p>'
+            )
+    flush_list()
+    return "\n".join(out_parts)
+
+
+def make_anchor(title: str, seen: dict) -> str:
+    slug = re.sub(r"[^\w\s-]", "", title.lower())
+    slug = re.sub(r"[\s_]+", "-", slug).strip("-")[:60] or "item"
+    n = seen.get(slug, 0) + 1
+    seen[slug] = n
+    return slug if n == 1 else f"{slug}-{n}"
+
+
+def build_image_html(image_path: str, title: str, images_dir: Path) -> str:
+    if not image_path or not image_path.strip():
+        return ""
+    img_file = images_dir / image_path.strip()
+    if not img_file.exists():
+        print(
+            f"  [WARN] Image not found: {img_file} "
+            f"(item '{title}'). Skipping image.",
+            file=sys.stderr,
         )
-    return "".join(parts)
+        return ""
+    alt = html.escape(title)
+    src = image_path.strip()
+    return (
+        f'<div class="item-image">'
+        f'<a href="../Images/{src}" target="_blank">'
+        f'<img src="../Images/{src}" alt="{alt}" width="580" style="max-width:100%;">'
+        f'</a></div>'
+    )
 
-def normalize_section(sec):
-    secclean = clean_text(sec).lower() if sec else ""
-    if not secclean:
-        return DEFAULT_SECTION
-    return SECTION_ALIASES.get(secclean, clean_text(sec))
 
-# ------------------------------------------------------------
-# ROW PARSING AND GROUPING
-# ------------------------------------------------------------
+def compile_events(issue_date: str) -> int:
+    images_dir = PROJ_DIR / "Images"
 
-def parse_rows(input_path):
+    if not INPUT_CSV.exists():
+        print(f"ERROR: Input CSV not found: {INPUT_CSV}", file=sys.stderr)
+        return 1
+
     rows = []
-    if not os.path.exists(input_path):
-        print(f"Error: {input_path} not found", file=sys.stderr)
-        return rows
-    with open(input_path, "r", encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter=",")
-        print(f"Raw fieldnames: {reader.fieldnames}", file=sys.stderr)
-        for row in reader:
-            normalized = {}
-            for key, value in row.items():
-                if key is None:
-                    continue
-                normalized_key = normalize_header(key)
-                normalized[normalized_key] = clean_text(value)
-            section = normalize_section(normalized.get("Section"))
-            title = normalized.get("Title") or DEFAULT_TITLE
-            text = normalized.get("Text")
-            image = normalized.get("Image")
-            if title or text or image:
-                rows.append(
-                    {
-                        "Section": section,
-                        "Title": title,
-                        "Text": text,
-                        "Image": image,
-                    }
+    try:
+        with open(INPUT_CSV, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames is None:
+                print("ERROR: events_data.csv appears empty or has no header row.", file=sys.stderr)
+                return 1
+            required_cols = {"Title", "Body", "Starts", "Ends"}
+            actual_cols = set(reader.fieldnames)
+            missing = required_cols - actual_cols
+            if missing:
+                print(
+                    f"ERROR: events_data.csv is missing required columns: "
+                    f"{', '.join(sorted(missing))}\n"
+                    f"  Found columns: {', '.join(sorted(actual_cols))}\n"
+                    f"  Fix: Re-export from Chucks-list-MASTER.ods and re-run preprocess.",
+                    file=sys.stderr,
                 )
-    print(f"Loaded {len(rows)} events from {input_path}", file=sys.stderr)
-    return rows
+                return 1
+            for i, row in enumerate(reader, start=2):
+                rows.append((i, row))
+    except Exception as e:
+        print(f"ERROR reading {INPUT_CSV}: {e}", file=sys.stderr)
+        return 1
 
-def group_rows(rows):
-    grouped = OrderedDict()
-    # Initialize canonical sections in desired order
-    for sec in SECTION_ORDER:
-        grouped[sec] = []
-    # Put each row into its section
-    for row in rows:
-        section_name = row["Section"] or DEFAULT_SECTION
-        if section_name not in grouped:
-            grouped[section_name] = []
-        grouped[section_name].append(row)
-    total_items = sum(len(v) for v in grouped.values())
-    print(f"group_rows: sections={list(grouped.keys())}, total_items={total_items}", file=sys.stderr)
-    return grouped
-
-def derive_ids(grouped):
-    used_item_ids = set()
-    for section_name, items in grouped.items():
-        section_id = slugify(section_name)
-        for item in items:
-            item["section_id"] = section_id
-            item_id = slugify(item["Title"])
-            if item_id in used_item_ids:
-                base = item_id
-                n = 2
-                while f"{base}-{n}" in used_item_ids:
-                    n += 1
-                item_id = f"{base}-{n}"
-            used_item_ids.add(item_id)
-            item["item_id"] = item_id
-    print(
-        "derive_ids: sections after ids="
-        + str([(k, len(v)) for k, v in grouped.items()]),
-        file=sys.stderr,
-    )
-    return grouped
-
-# ------------------------------------------------------------
-# RENDER: PREHEADER, HEADER, TOC
-# ------------------------------------------------------------
-
-def render_preheader():
-    return """
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background-color:#f3ede2;">
-  <tr>
-    <td align="center" style="padding:18px 12px 8px 12px;">
-      <table role="presentation" class="container" width="720" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:720px;background-color:#fbf7f0;border:1px solid #d5cab8;">
-        <tr>
-          <td class="preheader mobile-pad" align="center" style="padding:14px 20px;font-size:14px;line-height:22px;color:#665b50;font-family:Arial, Helvetica, sans-serif;">
-            Can't read this email easily? <a href="LIVIEWINBROWSER" target="_blank" rel="noopener noreferrer" style="color:#a95c22;text-decoration:underline;">View this email in a browser</a>
-          </td>
-        </tr>
-      </table>
-    </td>
-  </tr>
-</table>
-"""
-
-def render_header():
-    return """
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background-color:#f3ede2;">
-  <tr>
-    <td align="center" style="padding:0 12px 18px 12px;">
-      <table role="presentation" class="container" width="720" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:720px;background-color:#fbf7f0;border:1px solid #d5cab8;">
-        <tr>
-          <td class="header-band mobile-pad" style="padding:30px 28px 28px 28px;background-color:#2e3d2f;border-bottom:4px solid #b46a2d;">
-            <div class="eyebrow" style="font-size:12px;line-height:18px;text-transform:uppercase;letter-spacing:1.2px;font-weight:bold;color:#bcc8b0;font-family:Arial, Helvetica, sans-serif;">Chuck's List &mdash; Events Calendar</div>
-            <div class="headline" style="padding-top:8px;font-size:30px;line-height:38px;font-weight:bold;color:#f7f1e6;font-family:Georgia, 'Times New Roman', Times, serif;">Upcoming events and activities around our community</div>
-            <div class="header-body-copy" style="padding-top:12px;font-size:19px;line-height:30px;color:#ddd2c3;font-family:Arial, Helvetica, sans-serif;">
-              Serving Cortez, Dolores, Mancos, Durango, and surrounding communities. Use this events email for local happenings, classes, performances, and community gatherings. If you do not see your event listed, please resubmit it.
-            </div>
-          </td>
-        </tr>
-"""
-
-def render_intro_note():
-    if not INTRO_NOTE.strip():
-        return ""
-    return """
-        <tr>
-          <td class="row-white mobile-pad" style="padding:22px 28px;background-color:#fbf7f0;">
-            <div class="callout body-copy" style="background-color:#edf2e7;border-left:4px solid #6b7c52;border-top:1px solid #c8d4b8;border-right:1px solid #c8d4b8;border-bottom:1px solid #c8d4b8;padding:16px;font-size:20px;line-height:31px;color:#201a15;font-family:Arial, Helvetica, sans-serif;">
-              %s
-            </div>
-          </td>
-        </tr>
-""" % render_inline(INTRO_NOTE)
-
-def render_reader_toc_toggle():
-    if not INCLUDE_READER_TOC_TOGGLE:
-        return ""
-    if DEFAULT_READER_TOC_MODE == "Section":
-        section_note = "You are viewing the shorter section list."
-        full_note = "Need more detail? Use the full contents list below."
-    else:
-        section_note = "Want a shorter list? Jump to the section-only contents."
-        full_note = "You are viewing the full contents list."
-    return f"""
-        <div class="toc-helper" style="padding-top:10px;font-size:15px;line-height:24px;color:#5d5248;font-family:Arial, Helvetica, sans-serif;">
-          Choose your view:
-          <a href="#toc-sections" style="color:#a95c22;text-decoration:underline;">Jump to sections only</a>
-          &nbsp;&middot;&nbsp;
-          <a href="#toc-full" style="color:#a95c22;text-decoration:underline;">Show full contents</a>
-        </div>
-        <div class="toc-helper" style="padding-top:8px;font-size:15px;line-height:24px;color:#5d5248;font-family:Arial, Helvetica, sans-serif;">
-          {html.escape(section_note, quote=False)} {html.escape(full_note, quote=False)}
-        </div>
-"""
-
-def render_section_only_toc(grouped):
-    out = []
-    out.append('<a name="toc-sections"></a>')
-    out.append('<div id="toc-sections" class="toc-label" style="font-size:13px;line-height:20px;font-weight:bold;color:#4f5e3d;text-transform:uppercase;letter-spacing:0.6px;font-family:Arial, Helvetica, sans-serif;border-bottom:1px solid #d5cab8;padding-bottom:4px;">Sections only</div>')
-    out.append('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:10px;">')
-    for section_name, items in grouped.items():
-        if not items:
-            continue
-        section_id = items[0].get("section_id") or slugify(section_name)
-        out.append(
-            f'<tr><td style="padding:14px 0 6px 0;font-size:20px;line-height:30px;color:#201a15;font-family:Arial, Helvetica, sans-serif;">'
-            f'<a href="#{section_id}" style="color:#a95c22;text-decoration:underline;font-weight:bold;">{html.escape(section_name)}</a>'
-            f'</td></tr>'
-        )
-    out.append("</table>")
-    return "".join(out)
-
-def render_full_toc(grouped):
-    out = []
-    out.append('<a name="toc-full"></a>')
-    out.append('<div id="toc-full" class="toc-label" style="font-size:13px;line-height:20px;font-weight:bold;color:#4f5e3d;text-transform:uppercase;letter-spacing:0.6px;font-family:Arial, Helvetica, sans-serif;border-bottom:1px solid #d5cab8;padding-bottom:4px;">Full contents</div>')
-    out.append('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:10px;">')
-    for section_name, items in grouped.items():
-        if not items:
-            continue
-        section_id = items[0].get("section_id") or slugify(section_name)
-        out.append(
-            f'<tr><td style="padding:14px 0 6px 0;font-size:20px;line-height:30px;color:#201a15;font-family:Arial, Helvetica, sans-serif;">'
-            f'<a href="#{section_id}" style="color:#a95c22;text-decoration:underline;font-weight:bold;">{html.escape(section_name)}</a>'
-            f'</td></tr>'
-        )
-        if INCLUDE_ITEM_TOC:
-            for item in items:
-                out.append(
-                    f'<tr><td style="padding:0 0 8px 18px;font-size:18px;line-height:28px;color:#201a15;font-family:Arial, Helvetica, sans-serif;">'
-                    f'&#8226; <a href="#{item["item_id"]}" style="color:#a95c22;text-decoration:underline;">{html.escape(item["Title"])}</a>'
-                    f'</td></tr>'
-                )
-    out.append("</table>")
-    return "".join(out)
-
-def render_toc(grouped):
-    if not INCLUDE_TOC or not grouped:
-        return ""
-    parts = []
-    parts.append("""
-        <tr>
-          <td class="row-white mobile-pad" style="padding:22px 28px 24px 28px;background-color:#fbf7f0;">
-            <div class="body-copy" style="font-size:20px;line-height:31px;color:#201a15;font-family:Arial, Helvetica, sans-serif;">
-              <span class="toc-label" style="font-size:13px;line-height:20px;font-weight:bold;color:#4f5e3d;text-transform:uppercase;letter-spacing:0.6px;font-family:Arial, Helvetica, sans-serif;">In this events calendar</span>
-            </div>
-""")
-    parts.append(render_reader_toc_toggle())
-    if DEFAULT_READER_TOC_MODE == "Section":
-        parts.append('<div style="padding-top:14px;">')
-        parts.append(render_section_only_toc(grouped))
-        parts.append("</div>")
-        if INCLUDE_ITEM_TOC:
-            parts.append('<div style="padding-top:18px;">')
-            parts.append(render_full_toc(grouped))
-            parts.append("</div>")
-    else:
-        parts.append('<div style="padding-top:14px;">')
-        parts.append(render_full_toc(grouped))
-        parts.append("</div>")
-        parts.append('<div style="padding-top:18px;">')
-        parts.append(render_section_only_toc(grouped))
-        parts.append("</div>")
-    parts.append("""
-          </td>
-        </tr>
-""")
-    return "".join(parts)
-
-# ------------------------------------------------------------
-# RENDER: ITEMS AND SECTIONS
-# ------------------------------------------------------------
-
-def render_image_block(image_value, alt_text, row_class):
-    images = [part.strip() for part in (image_value or "").split(",") if part.strip()]
-    if not images:
-        return ""
-    out = []
-    bg = "#fbf7f0" if row_class == "row-white" else "#f4eee3"
-    for img in images:
-        href = html.escape(img, quote=True)
-        alt = html.escape(alt_text if alt_text else "Event Image.", quote=True)
-        out.append(
-            f"""<!-- OPTIONAL IMAGE BLOCK -->
-<tr>
-  <td class="mobile-pad" style="padding:0 28px 22px 28px;background-color:{bg};">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background-color:#efe7da;border:1px solid #d5cab8;">
-      <tr>
-        <td style="padding:12px;">
-          <a href="{href}" target="_blank" rel="noopener noreferrer" style="display:block;text-decoration:none;">
-            <img src="{href}" alt="{alt}" style="display:block;width:100%;max-width:100%;height:auto;" />
-          </a>
-        </td>
-      </tr>
-    </table>
-  </td>
-</tr>
-"""
-        )
-    return "".join(out)
-
-def render_item(row, row_class):
-    bg = "#fbf7f0" if row_class == "row-white" else "#f4eee3"
-    body = render_text_to_body_html(row.get("Text"))
-    item_id = row["item_id"]
-    title = row["Title"]
-    out = []
-    out.append(
-        f"""<!-- EVENT ITEM {html.escape(title, quote=False)} -->
-<tr>
-  <td class="{row_class} mobile-pad" style="padding:22px 28px;background-color:{bg};">
-    <a name="{item_id}"></a>
-    <div id="{item_id}" class="section-title" style="font-size:24px;line-height:32px;font-weight:bold;color:#18130f;font-family:Arial, Helvetica, sans-serif;">
-      {html.escape(title, quote=False)}
-    </div>
-    {body}
-  </td>
-</tr>
-"""
-    )
-    if row.get("Image"):
-        out.append(render_image_block(row["Image"], title, row_class))
-    out.append(
-        f"""<tr>
-  <td style="padding:0;background-color:{bg};">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-      <tr>
-        <td class="hr-rule" style="border-top:1px solid #d5cab8;font-size:0;line-height:0;">&nbsp;</td>
-      </tr>
-    </table>
-  </td>
-</tr>
-"""
-    )
-    return "".join(out)
-
-def render_sections(grouped):
-    out = []
-    row_toggle = True
-    first_section = True
-    for section_name, items in grouped.items():
-        if not items:
-            continue
-        if not first_section:
-            out.append("""
-<tr>
-  <td style="padding:0;background-color:#fbf7f0;">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-      <tr>
-        <td class="hr-rule" style="border-top:1px solid #d5cab8;font-size:0;line-height:0;">&nbsp;</td>
-      </tr>
-    </table>
-  </td>
-</tr>
-""")
-        first_section = False
-        section_id = items[0].get("section_id") or slugify(section_name)
-        out.append(
-            f"""<!-- SECTION {html.escape(section_name, quote=False)} -->
-<tr>
-  <td class="section-label mobile-pad" style="padding:10px 28px;background-color:#365c61;border-top:1px solid #284449;border-bottom:1px solid #284449;font-size:13px;line-height:18px;text-transform:uppercase;letter-spacing:1.1px;font-weight:bold;color:#edf5f4;font-family:Arial, Helvetica, sans-serif;">
-    <a name="{section_id}"></a>
-    <div id="{section_id}" style="margin:0;padding:0;">{html.escape(section_name, quote=False)}</div>
-  </td>
-</tr>
-"""
-        )
-        for row in items:
-            out.append(render_item(row, "row-white" if row_toggle else "row-alt"))
-            row_toggle = not row_toggle
-    return "".join(out)
-
-def render_closing_note():
-    if not CLOSING_NOTE.strip():
-        return ""
-    return """
-<tr>
-  <td class="row-white mobile-pad" style="padding:22px 28px;background-color:#fbf7f0;">
-    <div class="callout body-copy" style="background-color:#edf2e7;border-left:4px solid #6b7c52;border-top:1px solid #c8d4b8;border-right:1px solid #c8d4b8;border-bottom:1px solid #c8d4b8;padding:16px;font-size:20px;line-height:31px;color:#201a15;font-family:Arial, Helvetica, sans-serif;">
-      %s
-    </div>
-  </td>
-</tr>
-""" % render_inline(CLOSING_NOTE)
-
-def render_footer():
-    return """
-<tr>
-  <td style="padding:18px 0 0 0;background-color:#f3ede2;">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background-color:#2e3d2f;border-top:3px solid #b46a2d;" class="footer-band">
-      <tr>
-        <td class="mobile-pad footer-copy" align="center" style="padding:20px 24px 6px 24px;font-size:13px;line-height:19px;color:#bcc8b0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
-          This email was sent by <a href="mailto:ChucksList@McAfeeFarm.biz" style="color:#e59b5d;text-decoration:underline;">ChucksList@McAfeeFarm.biz</a> to <a href="mailto:UDCONTACTEMAIL" style="color:#e59b5d;text-decoration:underline;">UDCONTACTEMAIL</a>.
-        </td>
-      </tr>
-      <tr>
-        <td class="mobile-pad footer-copy" align="center" style="padding:6px 24px;font-size:13px;line-height:19px;color:#bcc8b0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
-          Not interested? <a href="LIUNSUBSCRIBE" target="_blank" rel="noopener noreferrer" style="color:#e59b5d;text-decoration:underline;">Unsubscribe</a>.
-        </td>
-      </tr>
-      <tr>
-        <td class="mobile-pad footer-copy" align="center" style="padding:6px 24px;font-size:13px;line-height:19px;color:#bcc8b0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
-          Feedback or corrections? <a href="mailto:THill@techspecific.com" style="color:#e59b5d;text-decoration:underline;">THill@techspecific.com</a> &nbsp;&middot;&nbsp;
-          <a href="mailto:Chuck@mcafeefarm.biz" style="color:#e59b5d;text-decoration:underline;">Chuck@mcafeefarm.biz</a>
-        </td>
-      </tr>
-      <tr>
-        <td class="mobile-pad footer-copy" align="center" style="padding:6px 24px 24px 24px;font-size:13px;line-height:19px;color:#bcc8b0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
-          Chuck's List powered by <a href="https://www.techspecific.com" target="_blank" rel="noopener noreferrer" style="color:#e59b5d;text-decoration:underline;">TechSpecific</a>.
-        </td>
-      </tr>
-    </table>
-  </td>
-</tr>
-"""
-
-# ------------------------------------------------------------
-# MAIN BUILD
-# ------------------------------------------------------------
-
-def build_html(rows):
-    grouped = group_rows(rows)
-    grouped = derive_ids(grouped)
-    return "".join(
-        [
-            HTML_HEAD,
-            render_preheader(),
-            render_header(),
-            render_intro_note(),
-            render_toc(grouped),
-            render_sections(grouped),
-            render_closing_note(),
-            render_footer(),
-            "</table></td></tr></table></td></tr></table>",
-            HTML_FOOT,
-        ]
-    )
-
-def main():
-    basedir = os.path.dirname(os.path.abspath(__file__))
-    input_path = os.path.join(basedir, INPUT_FILENAME)
-    output_path = os.path.join(basedir, OUTPUT_FILENAME)
-    rows = parse_rows(input_path)
     if not rows:
-        print("Warning: No events found in events_data.csv", file=sys.stderr)
-    html_output = build_html(rows)
-    with open(output_path, "w", encoding="utf-8", newline="") as handle:
-        handle.write(html_output)
-    print(f"Wrote {output_path}")
+        print(
+            f"  [WARN] events_data.csv has no data rows for issue date {issue_date}. "
+            f"The output will be an empty events email.",
+            file=sys.stderr,
+        )
+
+    # Sort events by start date
+    def sort_key(item):
+        _, r = item
+        return (r.get("Starts") or "9999-99-99")
+
+    rows.sort(key=sort_key)
+
+    toc_entries = []
+    body_blocks = []
+    seen_anchors: dict = {}
+
+    for row_num, row in rows:
+        title    = (row.get("Title") or "").strip()
+        body_raw = (row.get("Body") or "").strip()
+        starts   = (row.get("Starts") or "").strip()
+        ends     = (row.get("Ends") or "").strip()
+        location = (row.get("Location") or "").strip()
+        contact  = (row.get("Contact") or "").strip()
+        phone    = (row.get("Phone") or "").strip()
+        image    = (row.get("Image") or "").strip()
+
+        if not title:
+            print(f"  [WARN] Row {row_num}: empty Title, skipping.", file=sys.stderr)
+            continue
+
+        anchor = make_anchor(title, seen_anchors)
+        toc_label = title if not starts else f"{title} ({starts})"
+        toc_entries.append((anchor, toc_label))
+
+        meta_parts = []
+        if starts and ends and starts != ends:
+            meta_parts.append(f"Dates: {html.escape(starts)} – {html.escape(ends)}")
+        elif starts:
+            meta_parts.append(f"Date: {html.escape(starts)}")
+        if location:
+            meta_parts.append(f"Location: {html.escape(location)}")
+        if contact:
+            meta_parts.append(f"Contact: {html.escape(contact)}")
+        if phone:
+            meta_parts.append(f"Phone: {html.escape(phone)}")
+        meta_html = " &nbsp;|&nbsp; ".join(meta_parts)
+
+        body_html  = render_body(body_raw)
+        image_html = build_image_html(image, title, images_dir)
+
+        body_blocks.append(
+            f'<a name="{anchor}"></a>'
+            f'<div class="item-block">'
+            f'  <div class="item-title">{html.escape(title)}</div>'
+            f'  <div class="item-meta">{meta_html}</div>'
+            f'  <div class="item-body">{body_html}</div>'
+            f'  {image_html}'
+            f'</div>'
+            f'<hr class="section-rule">'
+        )
+
+    toc_li = "\n".join(
+        f'<li><a href="#{anchor}">{html.escape(label)}</a></li>'
+        for anchor, label in toc_entries
+    )
+    toc_html = (
+        f'<div class="toc-box">'
+        f'<h2>Upcoming Events</h2>'
+        f'<ul style="list-style:none;padding-left:0;">{toc_li}</ul>'
+        f'</div>'
+    )
+
+    full_html = textwrap.dedent(f"""\
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Chuck's List Events — {html.escape(issue_date)}</title>
+      <style>
+    {EMAIL_CSS}
+      </style>
+    </head>
+    <body>
+    <div class="wrapper">
+      <div class="header">
+        <h1>Chuck's List Events</h1>
+        <p class="issue-date">Issue Date: {html.escape(issue_date)}</p>
+      </div>
+      {toc_html}
+      {"".join(body_blocks) if body_blocks else '<div style="padding:28px;text-align:center;color:#6E5740;">No events scheduled for this period.</div>'}
+      <div class="footer">
+        &copy; Chuck's List &mdash; Montezuma County, Colorado
+      </div>
+    </div>
+    </body>
+    </html>
+    """)
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        OUTPUT_HTML.write_text(full_html, encoding="utf-8")
+        staging_copy = OUTPUT_DIR / "chucks_events_final_output.html"
+        staging_copy.write_text(full_html, encoding="utf-8")
+        print(f"  [OK] Events HTML written: {OUTPUT_HTML}")
+        print(f"  [OK] Events staging copy: {staging_copy}")
+    except Exception as e:
+        print(f"ERROR writing output: {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        print(f"Compile failed: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+    import argparse
+    p = argparse.ArgumentParser(description="Compile events HTML output.")
+    p.add_argument("--issue-date", required=True, help="Issue date YYYY-MM-DD")
+    args = p.parse_args()
+    sys.exit(compile_events(args.issue_date))

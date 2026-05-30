@@ -1,328 +1,258 @@
-# -*- coding: utf-8 -*-
-from __future__ import annotations
+"""
+Chucks_List_Builder.py
+Role: Single entrypoint for the Chuck's List publishing pipeline.
+Canonical command:
+    py Chucks_List_Builder.py --issue-date YYYY-MM-DD [--issue-type bulletin|events|both]
+                              [--log-to-file] [--no-open-vscode]
+
+Design decisions:
+- All paths resolved relative to this file's directory (Path(__file__).resolve().parent).
+  This means the command works from any working directory.
+- Subprocess stdout/stderr are streamed live AND captured for summary.
+- Exit code 0 = all stages passed. Exit code 1 = at least one stage failed.
+- Log file written to logs/build_YYYY-MM-DD_HHMMSS.log when --log-to-file is set.
+"""
 
 import argparse
+import logging
 import subprocess
 import sys
 from datetime import date, datetime
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# Project root — anchored to this file, not to cwd
+# ---------------------------------------------------------------------------
+PROJ_DIR = Path(__file__).resolve().parent
 
-"""
-File: Chucks_List_Builder.py
-Role: Top-level production orchestrator
+PIPELINE_STAGES = {
+    "bulletin": [
+        {
+            "name": "Bulletin Preprocess",
+            "script": PROJ_DIR / "bulletins" / "preprocess_bulletin_text.py",
+        },
+        {
+            "name": "Bulletin Compile",
+            "script": PROJ_DIR / "bulletins" / "compile_bulletin.py",
+        },
+    ],
+    "events": [
+        {
+            "name": "Events Preprocess",
+            "script": PROJ_DIR / "events" / "preprocess_events_text.py",
+        },
+        {
+            "name": "Events Compile",
+            "script": PROJ_DIR / "events" / "compile_events.py",
+        },
+    ],
+}
 
-Purpose:
-- Run Chuck's List local production pipeline from a single command
-- Validate inputs and required files
-- Execute preprocess + compile stages in correct order
-- Report clean success/failure status
-- Optionally write logs to ./logs/
-
-Supported options:
-    --issue-date YYYY-MM-DD
-    --issue-type bulletin | events | both
-    --log-to-file
-    --no-open-vscode   (reserved for future behavior)
-"""
-
-
-# ============================================================
-# PATHS
-# ============================================================
-
-BASE_DIR = Path(__file__).resolve().parent
-BULLETINS_DIR = BASE_DIR / "bulletins"
-EVENTS_DIR = BASE_DIR / "events"
-LOGS_DIR = BASE_DIR / "logs"
-
-BULLETINS_CSV = BASE_DIR / "Bulletins.csv"
-EVENTS_CSV = BASE_DIR / "Events.csv"
-
-PYTHON_EXE = sys.executable
+OUTPUT_FILES = {
+    "bulletin": PROJ_DIR / "bulletins" / "chucks_bulletin_final_output.html",
+    "events":   PROJ_DIR / "events" / "chucks_events_final_output.html",
+}
 
 
-# ============================================================
-# ARGUMENTS
-# ============================================================
+def setup_logging(log_to_file: bool, issue_date: str) -> logging.Logger:
+    logger = logging.getLogger("chucks_builder")
+    logger.setLevel(logging.DEBUG)
+    fmt = logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 
-def parse_issue_date_arg(value: str) -> date:
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.DEBUG)
+    ch.setFormatter(fmt)
+    logger.addHandler(ch)
+
+    if log_to_file:
+        logs_dir = PROJ_DIR / "logs"
+        logs_dir.mkdir(exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        log_file = logs_dir / f"build_{ts}.log"
+        fh = logging.FileHandler(log_file, encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+        logger.info(f"Log file: {log_file}")
+
+    return logger
+
+
+def validate_issue_date(issue_date_str: str) -> date:
+    """Fail fast with a helpful message if the date is wrong."""
     try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            f"Invalid --issue-date '{value}'. Use YYYY-MM-DD."
-        ) from exc
+        d = date.fromisoformat(issue_date_str)
+    except ValueError:
+        print(
+            f"ERROR: --issue-date '{issue_date_str}' is not a valid date.\n"
+            f"  Expected format: YYYY-MM-DD (e.g., 2026-06-07)\n"
+            f"  Fix: Check the date and re-run.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return d
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Chuck's List unified builder for bulletin and events pipelines."
-    )
+def run_stage(
+    stage: dict,
+    issue_date: str,
+    logger: logging.Logger,
+) -> tuple[int, str, str]:
+    """
+    Run a single pipeline stage script via subprocess.
+    Returns (returncode, stdout_text, stderr_text).
+    Streams output live to console AND captures it.
+    """
+    script: Path = stage["script"]
+    name: str    = stage["name"]
 
-    parser.add_argument(
-        "--issue-date",
-        type=parse_issue_date_arg,
-        required=True,
-        help="Issue date in YYYY-MM-DD format.",
-    )
+    if not script.exists():
+        msg = (
+            f"ERROR: Script not found: {script}\n"
+            f"  Fix: Ensure the file exists at the expected path."
+        )
+        logger.error(msg)
+        return 1, "", msg
 
-    parser.add_argument(
-        "--issue-type",
-        choices=["bulletin", "events", "both"],
-        default="both",
-        help="Which pipeline(s) to run. Default: both.",
-    )
-
-    parser.add_argument(
-        "--log-to-file",
-        action="store_true",
-        help="Also write a log file under ./logs/.",
-    )
-
-    parser.add_argument(
-        "--no-open-vscode",
-        action="store_true",
-        help="Reserved for future behavior; currently ignored.",
-    )
-
-    return parser.parse_args()
-
-
-# ============================================================
-# LOGGING
-# ============================================================
-
-class BuildLogger:
-    def __init__(self, log_to_file: bool, issue_date: date, issue_type: str):
-        self.log_to_file = log_to_file
-        self.issue_date = issue_date
-        self.issue_type = issue_type
-        self.log_path: Path | None = None
-        self._handle = None
-
-        if self.log_to_file:
-            LOGS_DIR.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            self.log_path = LOGS_DIR / f"build-{issue_type}-{issue_date.isoformat()}-{timestamp}.log"
-            self._handle = open(self.log_path, "w", encoding="utf-8", newline="")
-
-    def close(self) -> None:
-        if self._handle:
-            self._handle.close()
-            self._handle = None
-
-    def _write(self, level: str, message: str) -> None:
-        line = f"[{level}] {message}"
-        print(line)
-        if self._handle:
-            self._handle.write(line + "\n")
-            self._handle.flush()
-
-    def info(self, message: str) -> None:
-        self._write("INFO", message)
-
-    def warn(self, message: str) -> None:
-        self._write("WARN", message)
-
-    def error(self, message: str) -> None:
-        self._write("ERROR", message)
-
-    def section(self, message: str) -> None:
-        divider = "=" * 72
-        self._write("INFO", divider)
-        self._write("INFO", message)
-        self._write("INFO", divider)
-
-
-# ============================================================
-# VALIDATION
-# ============================================================
-
-def validate_required_files(issue_type: str, logger: BuildLogger) -> bool:
-    ok = True
-
-    if issue_type in {"bulletin", "both"}:
-        if BULLETINS_CSV.exists():
-            logger.info(f"Found bulletin source: {BULLETINS_CSV}")
-        else:
-            logger.error(f"Missing required file: {BULLETINS_CSV}")
-            ok = False
-
-    if issue_type in {"events", "both"}:
-        if EVENTS_CSV.exists():
-            logger.info(f"Found events source: {EVENTS_CSV}")
-        else:
-            logger.error(f"Missing required file: {EVENTS_CSV}")
-            ok = False
-
-    return ok
-
-
-# ============================================================
-# SUBPROCESS RUNNER
-# ============================================================
-
-def run_script(
-    script_path: Path,
-    issue_date: date,
-    working_dir: Path,
-    logger: BuildLogger,
-) -> bool:
-    cmd = [
-        PYTHON_EXE,
-        str(script_path),
-        "--issue-date",
-        issue_date.isoformat(),
-    ]
-
-    logger.info(f"Running: {' '.join(cmd)}")
-    logger.info(f"Working directory: {working_dir}")
+    cmd = [sys.executable, str(script), "--issue-date", issue_date]
+    logger.info(f"  Running: {' '.join(cmd)}")
 
     try:
         result = subprocess.run(
             cmd,
-            cwd=str(working_dir),
+            cwd=str(PROJ_DIR),          # always run from project root
             capture_output=True,
             text=True,
-            check=False,
+            encoding="utf-8",
         )
-    except Exception as exc:
-        logger.error(f"Failed to launch {script_path.name}: {exc}")
-        return False
+    except Exception as e:
+        msg = f"ERROR: Failed to launch {script.name}: {e}"
+        logger.error(msg)
+        return 1, "", msg
 
-    if result.stdout:
-        for line in result.stdout.splitlines():
-            logger.info(f"{script_path.name} | {line}")
+    # Stream captured output to logger
+    if result.stdout.strip():
+        for line in result.stdout.strip().splitlines():
+            logger.info(f"    {line}")
+    if result.stderr.strip():
+        for line in result.stderr.strip().splitlines():
+            # surface warnings as warnings, errors as errors
+            if "[WARN]" in line:
+                logger.warning(f"    {line}")
+            else:
+                logger.error(f"    {line}")
 
-    if result.stderr:
-        for line in result.stderr.splitlines():
-            logger.error(f"{script_path.name} | {line}")
-
-    if result.returncode != 0:
-        logger.error(f"{script_path.name} exited with code {result.returncode}")
-        return False
-
-    logger.info(f"{script_path.name} completed successfully")
-    return True
-
-
-# ============================================================
-# PIPELINE DEFINITIONS
-# ============================================================
-
-def bulletin_pipeline(issue_date: date, logger: BuildLogger) -> bool:
-    logger.section("BULLETIN PIPELINE")
-
-    preprocess_script = BULLETINS_DIR / "preprocess_bulletin_text.py"
-    compile_script = BULLETINS_DIR / "compile_bulletin.py"
-
-    if not preprocess_script.exists():
-        logger.error(f"Missing bulletin preprocess script: {preprocess_script}")
-        return False
-
-    if not compile_script.exists():
-        logger.error(f"Missing bulletin compile script: {compile_script}")
-        return False
-
-    if not run_script(preprocess_script, issue_date, BULLETINS_DIR, logger):
-        logger.error("Bulletin preprocess stage failed")
-        return False
-
-    if not run_script(compile_script, issue_date, BULLETINS_DIR, logger):
-        logger.error("Bulletin compile stage failed")
-        return False
-
-    logger.info("Bulletin pipeline succeeded")
-    return True
+    return result.returncode, result.stdout, result.stderr
 
 
-def events_pipeline(issue_date: date, logger: BuildLogger) -> bool:
-    logger.section("EVENTS PIPELINE")
+def open_in_vscode(paths: list[Path], logger: logging.Logger) -> None:
+    """Attempt to open output files in VS Code. Non-fatal on failure."""
+    try:
+        for p in paths:
+            if p.exists():
+                subprocess.Popen(["code", str(p)], shell=True)
+                logger.info(f"  Opened in VS Code: {p.name}")
+    except Exception:
+        pass  # VS Code open is a convenience, never a build blocker
 
-    preprocess_script = EVENTS_DIR / "preprocess_events_text.py"
-    compile_script = EVENTS_DIR / "compile_events.py"
-
-    if not preprocess_script.exists():
-        logger.error(f"Missing events preprocess script: {preprocess_script}")
-        return False
-
-    if not compile_script.exists():
-        logger.error(f"Missing events compile script: {compile_script}")
-        return False
-
-    if not run_script(preprocess_script, issue_date, EVENTS_DIR, logger):
-        logger.error("Events preprocess stage failed")
-        return False
-
-    if not run_script(compile_script, issue_date, EVENTS_DIR, logger):
-        logger.error("Events compile stage failed")
-        return False
-
-    logger.info("Events pipeline succeeded")
-    return True
-
-
-# ============================================================
-# MAIN
-# ============================================================
 
 def main() -> int:
-    args = parse_args()
-    logger = BuildLogger(
-        log_to_file=args.log_to_file,
-        issue_date=args.issue_date,
-        issue_type=args.issue_type,
+    parser = argparse.ArgumentParser(
+        description="Chuck's List publishing pipeline builder.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""\
+        Examples:
+          py Chucks_List_Builder.py --issue-date 2026-06-07
+          py Chucks_List_Builder.py --issue-date 2026-06-07 --issue-type bulletin
+          py Chucks_List_Builder.py --issue-date 2026-06-07 --log-to-file
+        """),
     )
+    parser.add_argument(
+        "--issue-date",
+        required=True,
+        metavar="YYYY-MM-DD",
+        help="Publication date for this issue (required)",
+    )
+    parser.add_argument(
+        "--issue-type",
+        choices=["bulletin", "events", "both"],
+        default="both",
+        help="Which pipeline(s) to run (default: both)",
+    )
+    parser.add_argument(
+        "--log-to-file",
+        action="store_true",
+        help="Write build log to logs/build_YYYY-MM-DD_HHMMSS.log",
+    )
+    parser.add_argument(
+        "--no-open-vscode",
+        action="store_true",
+        help="Do not open output files in VS Code after build",
+    )
+    args = parser.parse_args()
 
-    try:
-        logger.section("CHUCK'S LIST BUILDER START")
-        logger.info(f"BASE_DIR: {BASE_DIR}")
-        logger.info(f"ISSUE_DATE: {args.issue_date.isoformat()}")
-        logger.info(f"ISSUE_TYPE: {args.issue_type}")
-        logger.info(f"LOG_TO_FILE: {args.log_to_file}")
-        logger.info(f"NO_OPEN_VSCODE: {args.no_open_vscode}")
+    issue_date = validate_issue_date(args.issue_date)
+    logger = setup_logging(args.log_to_file, args.issue_date)
 
-        if logger.log_path:
-            logger.info(f"LOG_PATH: {logger.log_path}")
+    logger.info("=" * 60)
+    logger.info(f"Chuck's List Builder — issue date: {args.issue_date}")
+    logger.info(f"Pipeline: {args.issue_type}  |  Project root: {PROJ_DIR}")
+    logger.info("=" * 60)
 
-        if not validate_required_files(args.issue_type, logger):
-            logger.error("Required file validation failed")
-            return 1
+    # Determine which pipelines to run
+    pipelines = []
+    if args.issue_type in ("bulletin", "both"):
+        pipelines.append("bulletin")
+    if args.issue_type in ("events", "both"):
+        pipelines.append("events")
 
-        bulletin_ok = True
-        events_ok = True
+    failed_stages = []
+    passed_stages = []
 
-        if args.issue_type in {"bulletin", "both"}:
-            bulletin_ok = bulletin_pipeline(args.issue_date, logger)
+    for pipeline in pipelines:
+        logger.info(f"\n── {pipeline.upper()} PIPELINE ──")
+        for stage in PIPELINE_STAGES[pipeline]:
+            logger.info(f"\n  Stage: {stage['name']}")
+            rc, stdout, stderr = run_stage(stage, args.issue_date, logger)
+            if rc != 0:
+                logger.error(
+                    f"  FAILED: {stage['name']} exited with code {rc}.\n"
+                    f"  Stopping {pipeline} pipeline. Fix the errors above and re-run."
+                )
+                failed_stages.append(stage["name"])
+                break  # stop this pipeline on first failure
+            else:
+                passed_stages.append(stage["name"])
 
-        if args.issue_type in {"events", "both"}:
-            events_ok = events_pipeline(args.issue_date, logger)
+    # Summary
+    logger.info("\n" + "=" * 60)
+    logger.info("BUILD SUMMARY")
+    logger.info("=" * 60)
+    for s in passed_stages:
+        logger.info(f"  ✓  {s}")
+    for s in failed_stages:
+        logger.error(f"  ✗  {s}")
 
-        logger.section("BUILD SUMMARY")
-        if args.issue_type in {"bulletin", "both"}:
-            logger.info(f"Bulletin pipeline: {'SUCCESS' if bulletin_ok else 'FAILED'}")
-        if args.issue_type in {"events", "both"}:
-            logger.info(f"Events pipeline: {'SUCCESS' if events_ok else 'FAILED'}")
-
-        all_ok = True
-        if args.issue_type == "bulletin":
-            all_ok = bulletin_ok
-        elif args.issue_type == "events":
-            all_ok = events_ok
-        elif args.issue_type == "both":
-            all_ok = bulletin_ok and events_ok
-
-        if all_ok:
-            logger.info("Build completed successfully")
-            return 0
-
-        logger.error("Build completed with failures")
+    if not failed_stages:
+        logger.info("\nAll stages passed.")
+        # Open outputs in VS Code
+        if not args.no_open_vscode:
+            outputs = [OUTPUT_FILES[p] for p in pipelines if OUTPUT_FILES[p].exists()]
+            if outputs:
+                open_in_vscode(outputs, logger)
+        logger.info("\nNext steps:")
+        for p in pipelines:
+            out = OUTPUT_FILES[p]
+            logger.info(f"  Upload {out.name} to Zoho Campaigns ({p} staging folder).")
+        return 0
+    else:
+        logger.error(
+            f"\n{len(failed_stages)} stage(s) failed. "
+            f"Review errors above. No partial output should be uploaded to Zoho."
+        )
         return 1
-
-    finally:
-        logger.close()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import textwrap
+    sys.exit(main())

@@ -1,469 +1,211 @@
-# -*- coding: utf-8 -*-
-from __future__ import annotations
+"""
+bulletins/preprocess_bulletin_text.py
+Role: Read raw Bulletins.csv, validate, filter by issue_date, write bulletins_data.csv
+Pipeline stage: PREPROCESS (runs before compile_bulletin.py)
+Called by: Chucks_List_Builder.py via subprocess
 
-import argparse
+Operator error messages include: row number, field name, raw value, expected fix.
+"""
+
 import csv
+import re
 import sys
-import unicodedata
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
-from typing import cast, Any
-
-try:
-    import pandas as pd
-except ImportError as exc:
-    raise SystemExit(
-        "Missing dependency: pandas\n"
-        "Install with: py -m pip install pandas odfpy"
-    ) from exc
-
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-COMPILER_DIR = SCRIPT_DIR.parent
-BASE_DIR = COMPILER_DIR.parent
+PROJ_DIR   = SCRIPT_DIR.parent
+INPUT_CSV  = PROJ_DIR / "Bulletins.csv"
+OUTPUT_CSV = SCRIPT_DIR / "bulletins_data.csv"
 
-BULLETINS_OUTPUT_PATH = COMPILER_DIR / "bulletins" / "bulletins_data.csv"
+REQUIRED_COLS = ["Title", "Body", "Section", "Received", "Expires"]
+OPTIONAL_COLS = ["Contact", "Phone", "Image"]
 
-BULLETIN_SHEET_CANDIDATES = ["Bulletin", "Bulletins", "bulletin", "bulletins"]
-BULLETINS_OUTPUT_FIELDS = ["section", "title", "text", "image"]
+SECTION_ORDER = [
+    "Urgent Bulletins",
+    "Housing Opportunities",
+    "Swap Market",
+    "Local Services & Help",
+    "Community Announcements",
+]
 
-HEADER_ALIASES = {
-    "received": "received",
-    "received date": "received",
-    "starts": "starts",
-    "start": "starts",
-    "start date": "starts",
-    "ends": "ends",
-    "end": "ends",
-    "end date": "ends",
-    "expires": "ends",
-    "expiration": "ends",
-    "section": "section",
-    "category": "section",
-    "catergory": "section",
-    "group": "section",
-    "type": "section",
-    "title": "title",
-    "subject": "title",
-    "headline": "title",
-    "post title": "title",
-    "text": "text",
-    "body": "text",
-    "description": "text",
-    "content": "text",
-    "details": "text",
-    "image": "image",
-    "image path": "image",
-    "imagepath": "image",
-    "img": "image",
-    "photo": "image",
-    "notes": "notes",
-}
-
-COMMON_TEXT_REPAIRS = {
-    "\u00a0": " ",
-    "Â ": " ",
-    "Â": "",
-    "â€”": "—",
-    "â€“": "–",
-    "â€˜": "‘",
-    "â€™": "’",
-    "â€œ": "“",
-    "â€\x9d": "”",
-    "â€¦": "…",
-}
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def find_first_existing(candidates: list[Path]) -> Path | None:
-    for path in candidates:
-        if path.exists():
-            return path
-    return None
-
-
-WORKBOOK_PATH = find_first_existing([
-    BASE_DIR / "Chucks-list-MASTER.ods",
-    COMPILER_DIR / "Chucks-list-MASTER.ods",
-    SCRIPT_DIR / "Chucks-list-MASTER.ods",
-])
-
-BULLETINS_CSV_PATH = find_first_existing([
-    BASE_DIR / "Bulletins.csv",
-    BASE_DIR / "bulletins.csv",
-    COMPILER_DIR / "Bulletins.csv",
-    COMPILER_DIR / "bulletins.csv",
-    SCRIPT_DIR / "Bulletins.csv",
-    SCRIPT_DIR / "bulletins.csv",
-])
-
-
-def parse_date(value) -> date | None:
-    if value is None:
+def parse_date(val: str, row_num: int, field: str) -> date | None:
+    """Parse YYYY-MM-DD string. Print actionable error and return None on failure."""
+    val = val.strip()
+    if not val:
+        print(
+            f"  [WARN] Row {row_num}: field '{field}' is empty. "
+            f"Expected format: YYYY-MM-DD. Item will be skipped.",
+            file=sys.stderr,
+        )
         return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-
-    text = str(value).strip()
-    if not text or text.lower() == "nan":
+    if not DATE_RE.match(val):
+        print(
+            f"  [WARN] Row {row_num}: field '{field}' has invalid date value '{val}'. "
+            f"Expected format: YYYY-MM-DD (e.g., 2026-06-01). Item will be skipped.",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        return date.fromisoformat(val)
+    except ValueError as e:
+        print(
+            f"  [WARN] Row {row_num}: field '{field}' date '{val}' is not a real date: {e}. "
+            f"Item will be skipped.",
+            file=sys.stderr,
+        )
         return None
 
-    for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(text, fmt).date()
-        except ValueError:
-            continue
 
-    return None
+def normalize_text(text: str) -> str:
+    """Normalize line endings. Do not strip intentional whitespace."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def valid_issue_date(value: str) -> date:
-    parsed = parse_date(value)
-    if parsed is None:
-        raise argparse.ArgumentTypeError(
-            f"Invalid date '{value}'. Use MM/DD/YY, MM/DD/YYYY, or YYYY-MM-DD."
+def preprocess_bulletins(issue_date_str: str) -> int:
+    """
+    Filter Bulletins.csv by: Received <= issue_date <= Expires.
+    Write passing rows to bulletins_data.csv.
+    Returns 0 on success, 1 on fatal error.
+    """
+    try:
+        issue_date = date.fromisoformat(issue_date_str)
+    except ValueError:
+        print(
+            f"ERROR: --issue-date '{issue_date_str}' is not a valid date. "
+            f"Expected format: YYYY-MM-DD.",
+            file=sys.stderr,
         )
-    return parsed
+        return 1
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Preprocess Chuck's List Bulletins into bulletins_data.csv."
-    )
-    parser.add_argument(
-        "--issue-date",
-        type=valid_issue_date,
-        default=date.today(),
-        help="Primary filter date.",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Print included/excluded rows with parsed dates.",
-    )
-    return parser.parse_args()
-
-
-def normalize_header(value: str) -> str:
-    cleaned = " ".join(str(value or "").strip().lower().split())
-    return HEADER_ALIASES.get(cleaned, cleaned)
-
-
-def normalize_unicode_text(text: str) -> str:
-    for bad, good in COMMON_TEXT_REPAIRS.items():
-        text = text.replace(bad, good)
-    text = unicodedata.normalize("NFKC", text)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return text
-
-
-def clean_cell_text(value) -> str:
-    if value is None:
-        return ""
-
-    text = str(value)
-    if text.lower() == "nan":
-        return ""
-
-    text = normalize_unicode_text(text)
-
-    lines = [line.rstrip() for line in text.split("\n")]
-    out_lines = []
-    blank_run = 0
-
-    for line in lines:
-        if line.strip() == "":
-            blank_run += 1
-            if blank_run <= 2:
-                out_lines.append("")
-        else:
-            blank_run = 0
-            out_lines.append(line)
-
-    return "\n".join(out_lines).strip()
-
-
-def normalize_image(value: str) -> str:
-    value = clean_cell_text(value).replace("\\", "/")
-    if not value:
-        return ""
-
-    if value.lower().startswith(("http://", "https://", "cid:", "data:")):
-        return value
-
-    parts = [part.strip() for part in value.split("&")]
-    normalized = []
-
-    for part in parts:
-        if not part:
-            continue
-        if part.lower().startswith(("http://", "https://", "cid:", "data:", "images/")):
-            normalized.append(part)
-        else:
-            normalized.append(f"Images/{part.split('/')[-1]}")
-
-    return " & ".join(normalized)
-
-
-def score_sheet_columns(columns: set[str], required: set[str]) -> int:
-    return sum(1 for col in required if col in columns)
-
-
-def find_sheet_name(xls: "pd.ExcelFile", candidates: list[str], required: set[str]) -> str:
-    lower_map = {str(name).lower(): name for name in xls.sheet_names}
-
-    for candidate in candidates:
-        match = lower_map.get(str(candidate).lower())
-        if match:
-            return str(match)
-
-    best_name: str | None = None
-    best_score = -1
-
-    for sheet_name in xls.sheet_names:
-        preview = pd.read_excel(xls, sheet_name=sheet_name, engine="odf")
-        normalized = {normalize_header(str(col)) for col in preview.columns}
-        score = score_sheet_columns(normalized, required)
-        if score > best_score:
-            best_score = score
-            best_name = str(sheet_name)
-
-    if best_name is None:
-        raise ValueError("Unable to identify Bulletin worksheet.")
-
-    return best_name
-
-
-def read_csv_stable(path: Path) -> "pd.DataFrame":
-    attempts = [
-        {"sep": ",", "engine": "python"},
-        {"sep": "\t", "engine": "python"},
-        {"sep": ";", "engine": "python"},
-        {"sep": "|", "engine": "python"},
-    ]
-
-    last_error = None
-
-    for opts in attempts:
-        try:
-            df = pd.read_csv(
-                path,
-                sep=opts["sep"],
-                engine=cast(Any, opts["engine"]),
-                encoding="utf-8-sig",
-                dtype=str,
-                keep_default_na=False,
-            )
-
-            normalized_cols = [normalize_header(col) for col in df.columns]
-            score = sum(
-                1
-                for col in normalized_cols
-                if col in {"received", "starts", "ends", "section", "title", "text", "image", "notes"}
-            )
-
-            if score >= 3:
-                return df
-        except Exception as exc:
-            last_error = exc
-
-    raise ValueError(f"Unable to parse bulletin CSV reliably: {path}\nLast error: {last_error}")
-
-
-def read_source_dataframe() -> tuple["pd.DataFrame", str]:
-    if BULLETINS_CSV_PATH and BULLETINS_CSV_PATH.exists():
-        print(f"Reading from CSV: {BULLETINS_CSV_PATH}")
-        df = read_csv_stable(BULLETINS_CSV_PATH)
-        print(f"Columns detected: {list(df.columns)}")
-        return df, "csv"
-
-    if WORKBOOK_PATH and WORKBOOK_PATH.exists():
-        print(f"Reading workbook: {WORKBOOK_PATH}")
-        xls = pd.ExcelFile(WORKBOOK_PATH, engine="odf")
-        print(f"Workbook sheets found: {xls.sheet_names}")
-        bulletin_sheet = find_sheet_name(
-            xls,
-            BULLETIN_SHEET_CANDIDATES,
-            required={"section", "title", "text"},
+    if not INPUT_CSV.exists():
+        print(
+            f"ERROR: Source file not found: {INPUT_CSV}\n"
+            f"  Fix: Export the Bulletins sheet from Chucks-list-MASTER.ods "
+            f"as CSV (UTF-8, comma-delimited) to {INPUT_CSV}",
+            file=sys.stderr,
         )
-        print(f"Bulletin sheet selected: {bulletin_sheet}")
-        df = pd.read_excel(xls, sheet_name=bulletin_sheet, engine="odf", dtype=str)
-        print(f"Columns detected: {list(df.columns)}")
-        return df, "ods"
+        return 1
 
-    raise FileNotFoundError(
-        "Neither source file was found.\n"
-        f"Checked bulletin CSV candidates in: {BASE_DIR}, {COMPILER_DIR}, {SCRIPT_DIR}\n"
-        f"Checked workbook candidates in: {BASE_DIR}, {COMPILER_DIR}, {SCRIPT_DIR}"
-    )
+    try:
+        with open(INPUT_CSV, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames is None:
+                print(
+                    f"ERROR: {INPUT_CSV} appears empty or has no header row.\n"
+                    f"  Fix: Re-export from Chucks-list-MASTER.ods.",
+                    file=sys.stderr,
+                )
+                return 1
+            actual_cols = set(reader.fieldnames)
+            missing = set(REQUIRED_COLS) - actual_cols
+            if missing:
+                print(
+                    f"ERROR: {INPUT_CSV} is missing required columns: "
+                    f"{', '.join(sorted(missing))}\n"
+                    f"  Found columns: {', '.join(sorted(actual_cols))}\n"
+                    f"  Fix: Re-export from Chucks-list-MASTER.ods with all required columns.",
+                    file=sys.stderr,
+                )
+                return 1
 
+            all_rows = list(reader)
 
-def load_sheet_records() -> list[dict]:
-    df, source_type = read_source_dataframe()
-    df.columns = [normalize_header(col) for col in df.columns]
-    print(f"Normalized columns: {list(df.columns)}")
+    except UnicodeDecodeError:
+        print(
+            f"ERROR: {INPUT_CSV} could not be decoded as UTF-8.\n"
+            f"  Fix: Re-save/export the file with UTF-8 encoding.",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception as e:
+        print(f"ERROR reading {INPUT_CSV}: {e}", file=sys.stderr)
+        return 1
 
-    records = []
-    for rownum, (_, row) in enumerate(df.iterrows(), start=2):
-        record = {
-            "_rownum": rownum,
-            "_source_type": source_type,
-        }
-        for column in df.columns:
-            value = row.get(column, "")
-            if column in {"received", "starts", "ends"}:
-                record[column] = parse_date(value)
-                record[f"_{column}_raw"] = "" if value is None else str(value)
-            else:
-                record[column] = clean_cell_text(value)
-        records.append(record)
+    passing_rows = []
+    skipped = 0
 
-    return records
+    for i, row in enumerate(all_rows, start=2):
+        title    = (row.get("Title") or "").strip()
+        received_str = (row.get("Received") or "").strip()
+        expires_str  = (row.get("Expires") or "").strip()
+        section  = (row.get("Section") or "").strip()
+        body     = normalize_text(row.get("Body") or "")
 
-
-def bulletin_matches_issue(row: dict, issue_date: date) -> tuple[bool, str]:
-    starts = row.get("starts")
-    received = row.get("received")
-    ends = row.get("ends")
-
-    if starts is not None:
-        if starts <= issue_date:
-            return True, f"starts <= issue date ({starts.isoformat()})"
-        return False, f"starts after issue date ({starts.isoformat()})"
-
-    if received is not None:
-        if received <= issue_date:
-            return True, f"received <= issue date ({received.isoformat()})"
-        return False, f"received after issue date ({received.isoformat()})"
-
-    if ends is not None:
-        if ends >= issue_date:
-            return True, f"ends >= issue date ({ends.isoformat()})"
-        return False, f"expired before issue date ({ends.isoformat()})"
-
-    return False, "missing starts, received, and ends"
-
-
-def build_bulletin_rows(records: list[dict], issue_date: date, debug: bool = False) -> list[dict]:
-    output = []
-    included = []
-    excluded = []
-
-    for row in records:
-        section = clean_cell_text(row.get("section", ""))
-        title = clean_cell_text(row.get("title", ""))
-        text = clean_cell_text(row.get("text", ""))
-        image = normalize_image(row.get("image", ""))
-
-        matches, reason = bulletin_matches_issue(row, issue_date)
-
-        received = row.get("received")
-        starts = row.get("starts")
-        ends = row.get("ends")
-
-        debug_row = {
-            "row": row.get("_rownum"),
-            "received": received.isoformat() if received else "",
-            "starts": starts.isoformat() if starts else "",
-            "ends": ends.isoformat() if ends else "",
-            "section": section,
-            "title": title,
-            "reason": reason,
-        }
-
-        if not matches:
-            excluded.append(debug_row)
+        # Skip completely blank rows
+        if not any(v.strip() for v in row.values()):
             continue
 
-        if not title and not text and not image:
-            debug_row["reason"] = "included by date but empty content"
-            excluded.append(debug_row)
-            continue
-
-        output.append({
-            "section": section or "Community Announcements",
-            "title": title or "Untitled Bulletin",
-            "text": text,
-            "image": image,
-        })
-        included.append(debug_row)
-
-    if debug:
-        print("\n=== INCLUDED ROWS ===")
-        for row in included:
+        if not title:
             print(
-                f"row {row['row']:>3} | "
-                f"received={row['received'] or '-':<10} | "
-                f"starts={row['starts'] or '-':<10} | "
-                f"ends={row['ends'] or '-':<10} | "
-                f"{row['section']:<28} | {row['title'][:50]} | {row['reason']}"
+                f"  [WARN] Row {i}: Title is empty. "
+                f"Section='{section}', Body starts with: '{body[:40]}'. "
+                f"Item skipped — please add a Title in the source workbook.",
+                file=sys.stderr,
             )
+            skipped += 1
+            continue
 
-        print("\n=== EXCLUDED ROWS ===")
-        for row in excluded:
+        received = parse_date(received_str, i, "Received")
+        expires  = parse_date(expires_str, i, "Expires")
+
+        if received is None or expires is None:
+            skipped += 1
+            continue
+
+        # Date filter: Received <= issue_date <= Expires
+        if not (received <= issue_date <= expires):
+            continue  # normal exclusion, not an error
+
+        if section and section not in SECTION_ORDER:
             print(
-                f"row {row['row']:>3} | "
-                f"received={row['received'] or '-':<10} | "
-                f"starts={row['starts'] or '-':<10} | "
-                f"ends={row['ends'] or '-':<10} | "
-                f"{row['reason']} | {row['title'][:50]}"
+                f"  [WARN] Row {i}: Title='{title}', Section='{section}' is not "
+                f"a recognized section name.\n"
+                f"  Valid sections: {', '.join(SECTION_ORDER)}.\n"
+                f"  Fix: Update the Section field in Chucks-list-MASTER.ods.",
+                file=sys.stderr,
+            )
+            skipped += 1
+            continue
+
+        # Check for suspicious raw link text that may break Zoho
+        body_lower = body.lower()
+        if "href=" in body_lower or "<a " in body_lower:
+            print(
+                f"  [WARN] Row {i}: Title='{title}' Body appears to contain raw HTML "
+                f"(<a> or href=). This may break Zoho import. "
+                f"Fix: Use plain-text URLs in the Body field, not HTML.",
+                file=sys.stderr,
             )
 
-    return output
+        out_row = {col: (row.get(col) or "").strip() for col in REQUIRED_COLS + OPTIONAL_COLS}
+        out_row["Body"] = body  # use normalized body
+        passing_rows.append(out_row)
 
+    out_cols = REQUIRED_COLS + OPTIONAL_COLS
+    try:
+        with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=out_cols, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(passing_rows)
+    except Exception as e:
+        print(f"ERROR writing {OUTPUT_CSV}: {e}", file=sys.stderr)
+        return 1
 
-def ensure_parent_dir(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-
-def write_tsv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
-    ensure_parent_dir(path)
-    with open(path, "w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=fieldnames,
-            delimiter=",",
-            quoting=csv.QUOTE_ALL,
-        )
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fieldnames})
-
-
-def preprocess_bulletins(issue_date: date, debug: bool = False) -> int:
-    bulletin_records = load_sheet_records()
-    print(f"Bulletin records loaded: {len(bulletin_records)}")
-
-    bulletin_rows = build_bulletin_rows(bulletin_records, issue_date, debug=debug)
-    print(f"Bulletin rows selected: {len(bulletin_rows)}")
-
-    write_tsv(BULLETINS_OUTPUT_PATH, bulletin_rows, BULLETINS_OUTPUT_FIELDS)
-    print(f"Wrote bulletins file: {BULLETINS_OUTPUT_PATH}")
-
-    return len(bulletin_rows)
-
-
-def main() -> int:
-    args = parse_args()
-
-    print(f"SCRIPT_DIR: {SCRIPT_DIR}")
-    print(f"BASE_DIR: {BASE_DIR}")
-    print(f"COMPILER_DIR: {COMPILER_DIR}")
-    print(f"WORKBOOK_PATH: {WORKBOOK_PATH}")
-    print(f"BULLETINS_CSV_PATH: {BULLETINS_CSV_PATH}")
-    print(f"BULLETINS_OUTPUT_PATH: {BULLETINS_OUTPUT_PATH}")
-    print(f"ISSUE_DATE: {args.issue_date.isoformat()}")
-
-    bulletin_count = preprocess_bulletins(issue_date=args.issue_date, debug=args.debug)
-
-    print(f"Bulletins written: {bulletin_count}")
+    print(
+        f"  [OK] Bulletins preprocess: "
+        f"{len(passing_rows)} items written to {OUTPUT_CSV} "
+        f"({skipped} skipped, issue_date={issue_date_str})"
+    )
     return 0
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except Exception as exc:
-        print(f"Preprocess failed: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+    import argparse
+    p = argparse.ArgumentParser(description="Preprocess Bulletins.csv.")
+    p.add_argument("--issue-date", required=True, help="Issue date YYYY-MM-DD")
+    args = p.parse_args()
+    sys.exit(preprocess_bulletins(args.issue_date))
