@@ -15,6 +15,11 @@ Engineer notes:
 - Image file existence is NOT validated here by design for the current local workflow.
   The HTML is often relocated after compile, and the CSV Image value is treated as trusted.
   If/when this pipeline is migrated to a server, restore strict image/path validation there.
+
+CHANGELOG
+  2026-05-31  Fix __main__ block: corrected 3-space indent (IndentationError causing
+              silent exit-0 with no output), fixed wrong function name compile_events()
+              -> compile_bulletins(), and fixed wrong kwarg callout= -> top_callout=.
 """
 
 from __future__ import annotations
@@ -609,15 +614,6 @@ def group_rows(rows: list[tuple[int, dict[str, str]]]) -> list[tuple[str, list[t
 # ---------------------------------------------------------------------------
 
 def build_image_html(image_path: str, title: str) -> str:
-    """
-    Current local workflow:
-    - trust the CSV Image value
-    - emit the image block directly
-    - do not validate the file on disk here
-
-    Server migration note:
-    - restore path/file validation when the pipeline runs in a fixed hosted environment
-    """
     if not image_path or not image_path.strip():
         return ""
 
@@ -724,6 +720,17 @@ def build_full_html(
 ) -> str:
     body_sections = "\n".join(section_blocks)
 
+    top_callout_block = ""
+    if top_callout and top_callout.strip():
+        top_callout_block = f"""
+            <tr>
+              <td class="row-white mobile-pad" style="padding:18px 28px;">
+                <div class="callout body-copy">
+                  {escape_then_linkify(top_callout)}
+                </div>
+              </td>
+            </tr>"""
+
     return f"""<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -796,13 +803,7 @@ def build_full_html(
               </td>
             </tr>
 
-            <tr>
-              <td class="row-white mobile-pad" style="padding:18px 28px;">
-                <div class="callout body-copy">
-                  {escape_then_linkify(top_callout)}
-                </div>
-              </td>
-            </tr>
+            {top_callout_block}
 
             {body_sections}
 
@@ -945,10 +946,11 @@ def compile_bulletins(issue_date: str, top_callout: str, bottom_callout: str) ->
 
     return 0
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compile bulletin HTML output.")
     parser.add_argument("--issue-date", required=True, help="Issue date YYYY-MM-DD")
-   parser.add_argument(
+    parser.add_argument(
         "--callout",
         default="",
         help="Top callout message. If omitted, the top callout box is suppressed entirely.",
@@ -960,9 +962,9 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     sys.exit(
-        compile_events(
+        compile_bulletins(
             issue_date=args.issue_date,
-            callout=args.callout,
+            top_callout=args.callout,
             bottom_callout=args.bottom_callout,
         )
     )

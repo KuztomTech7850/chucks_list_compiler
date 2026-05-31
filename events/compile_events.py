@@ -928,17 +928,17 @@ def compile_events(issue_date: str, callout: str | None = None, bottom_callout: 
     return 0
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Compile bulletin HTML output.")
+    parser = argparse.ArgumentParser(description="Compile events HTML output.")
     parser.add_argument("--issue-date", required=True, help="Issue date YYYY-MM-DD")
-   parser.add_argument(
+    parser.add_argument(
         "--callout",
-        default="",
-        help="Top callout message. If omitted, the top callout box is suppressed entirely.",
+        default=None,
+        help="Optional top callout box text override.",
     )
     parser.add_argument(
         "--bottom-callout",
-        default=DEFAULT_BOTTOM_CALLOUT,
-        help="Bottom callout message shown near the footer.",
+        default=None,
+        help="Optional bottom callout box text override.",
     )
     args = parser.parse_args()
     sys.exit(
