@@ -40,10 +40,29 @@ SECTION_ALIASES = {
     "Single": "Single Events",
     "Single Events": "Single Events",
     "Multiple": "Hosts with Multiple Events",
+    "Multiple Events": "Hosts with Multiple Events",
     "Hosts with Multiple Events": "Hosts with Multiple Events",
     "Recurring": "Recurring Events",
     "Recurring Events": "Recurring Events",
 }
+
+SECTION_ID_MAP = {
+    "Single Events": "section-single-events",
+    "Hosts with Multiple Events": "section-hosts-with-multiple-events",
+    "Recurring Events": "section-recurring-events",
+}
+
+DEFAULT_TOP_CALLOUT = (
+    "This Events edition highlights single events, hosts with several listings, "
+    "and recurring programs. Each listing includes a date-line and location so "
+    "you can quickly scan for what fits your schedule."
+)
+
+DEFAULT_BOTTOM_CALLOUT = (
+    "To be listed in a future Events edition, send your event name, date, "
+    "time, location, and a short description by the posted deadline to the "
+    "Chuck's List email address."
+)
 
 TRAILING_PUNCTUATION = ".,;:!?)}]"
 
@@ -53,6 +72,7 @@ MARKDOWN_LINK_RE = re.compile(
 )
 BULLET_LINE_RE = re.compile(r"^\s*[-*•]\s+(.*)$")
 SUBHEAD_RE = re.compile(r"^\s*##\s*(.+?)\s*$")
+
 
 EMAIL_CSS = """
     /* ---------- Base reset ---------- */
@@ -274,15 +294,6 @@ EMAIL_CSS = """
       margin: 0 0 6px 0;
     }
 
-    .toc-section-heading {
-      font-family: Arial, Helvetica, sans-serif;
-      font-size: 16px;
-      line-height: 24px;
-      font-weight: bold;
-      color: #1a1612;
-      margin-top: 10px;
-    }
-
     @media (prefers-color-scheme: dark) {
       body, .wrapper {
         background-color: #141413 !important;
@@ -324,13 +335,18 @@ EMAIL_CSS = """
         background-color: #1e221c !important;
       }
 
-      .section-title,
+      .section-title {
+        color: #eedfc8 !important;
+      }
+
+      .date-line {
+        color: #e19a60 !important;
+      }
+
       .body-copy,
       .body-copy p,
       .body-copy li,
-      .meta-line,
-      .toc-section-heading,
-      .date-line {
+      .meta-line {
         color: #d3c7b8 !important;
       }
 
@@ -483,18 +499,14 @@ def render_body(raw_text: str) -> str:
             if not paragraph_lines:
                 return
             joined = "<br>\n".join(escape_then_linkify(line) for line in paragraph_lines)
-            html_blocks.append(
-                f'<p style="margin:0 0 14px 0;line-height:1.7;">{joined}</p>'
-            )
+            html_blocks.append(f'<p style="margin:0 0 14px 0;line-height:1.7;">{joined}</p>')
             paragraph_lines = []
 
         def flush_list() -> None:
             nonlocal list_items
             if not list_items:
                 return
-            items = "".join(
-                f'<li style="margin-bottom:6px;">{item}</li>' for item in list_items
-            )
+            items = "".join(f'<li style="margin-bottom:6px;">{item}</li>' for item in list_items)
             html_blocks.append(
                 f'<ul style="margin:0 0 14px 0;padding-left:22px;">{items}</ul>'
             )
@@ -532,15 +544,6 @@ def render_body(raw_text: str) -> str:
     return "\n".join(html_blocks)
 
 def build_image_html(image_path: str, title: str) -> str:
-    """
-    Current local workflow:
-    - trust the CSV Image value
-    - emit the image block directly
-    - do not validate the file on disk here
-
-    Server migration note:
-    - restore path/file validation when the pipeline runs in a fixed hosted environment
-    """
     if not image_path or not image_path.strip():
         return ""
 
@@ -548,15 +551,15 @@ def build_image_html(image_path: str, title: str) -> str:
     alt = html.escape(title, quote=True)
 
     return (
-        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"'
-        f'       style="width:100%; margin-top:14px;">'
-        f'  <tr>'
-        f'    <td class="body-copy" style="padding:0; text-align:center;">'
-        f'      <a href="{src}" target="_blank" rel="noopener noreferrer" style="display:block; text-decoration:none;">'
-        f'        <img src="{src}" alt="{alt}" width="580" style="max-width:100%; height:auto; border-radius:4px; border:1px solid #d9cfc0;">'
-        f'      </a>'
-        f'    </td>'
-        f'  </tr>'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        f'style="width:100%; margin-top:14px;">'
+        f'<tr>'
+        f'<td class="body-copy" style="padding:0; text-align:center;">'
+        f'<a href="{src}" target="_blank" rel="noopener noreferrer" style="display:block; text-decoration:none;">'
+        f'<img src="{src}" alt="{alt}" width="580" style="max-width:100%; height:auto; border-radius:4px; border:1px solid #d9cfc0;">'
+        f'</a>'
+        f'</td>'
+        f'</tr>'
         f'</table>'
     )
 
@@ -633,13 +636,14 @@ def build_toc_html(
     lines: list[str] = []
 
     for section_name, items in grouped_sections:
-        lines.append(f'<li class="toc-section">{html.escape(section_name)}</li>')
+        section_id = SECTION_ID_MAP[section_name]
+        lines.append(
+            f'<li style="list-style:none; margin-top:10px;"><strong><a href="#{section_id}">{html.escape(section_name)}</a></strong></li>'
+        )
         for row_num, row in items:
             title = (row.get("Title") or "").strip()
-            starts = (row.get("Starts") or "").strip()
             anchor = item_anchor_map[(section_name, row_num)]
-            label = title if not starts else f"{title} ({starts})"
-            lines.append(f'<li><a href="#{anchor}">{html.escape(label)}</a></li>')
+            lines.append(f'<li><a href="#{anchor}">{html.escape(title)}</a></li>')
 
     return (
         '<div class="body-copy" style="font-size:18px; line-height:26px;">'
@@ -654,6 +658,8 @@ def build_full_html(
     issue_date: str,
     toc_html: str,
     section_blocks: list[str],
+    top_callout: str,
+    bottom_callout: str,
 ) -> str:
     body_sections = "\n".join(section_blocks)
 
@@ -732,9 +738,7 @@ def build_full_html(
             <tr>
               <td class="row-white mobile-pad" style="padding:18px 28px;">
                 <div class="callout body-copy">
-                  This Events edition highlights single events, hosts with several listings,
-                  and recurring programs. Each listing includes a date-line and location so
-                  you can quickly scan for what fits your schedule.
+                  {escape_then_linkify(top_callout)}
                 </div>
               </td>
             </tr>
@@ -744,9 +748,7 @@ def build_full_html(
             <tr>
               <td class="row-white mobile-pad" style="padding:22px 28px;">
                 <div class="callout body-copy">
-                  To be listed in a future Events edition, send your event name, date,
-                  time, location, and a short description by the posted deadline to the
-                  Chuck's List email address.
+                  {escape_then_linkify(bottom_callout)}
                 </div>
               </td>
             </tr>
@@ -795,10 +797,8 @@ def build_full_html(
 </html>
 """
 
-def compile_events(issue_date: str) -> int:
+def compile_events(issue_date: str, callout: str | None = None, bottom_callout: str | None = None) -> int:
     rows = read_rows()
-    if rows is None:
-        return 1
 
     if not rows:
         print(
@@ -828,9 +828,10 @@ def compile_events(issue_date: str) -> int:
     alternating_index = 0
 
     for section_name, items in grouped_sections:
+        section_id = SECTION_ID_MAP[section_name]
         section_blocks.append(
             f"""
-            <tr id="{html.escape(section_name).lower().replace(' ', '-')}">
+            <tr id="{section_id}">
               <td class="section-label mobile-pad" style="padding:10px 28px;">
                 {html.escape(section_name)}
               </td>
@@ -849,22 +850,23 @@ def compile_events(issue_date: str) -> int:
             image = (row.get("Image") or "").strip()
 
             row_class = "row-white" if alternating_index % 2 == 0 else "row-alt"
+            row_bg = "#fdf9f3" if row_class == "row-white" else "#f7f2e8"
             alternating_index += 1
 
             date_line = ""
             if starts and ends and starts != ends:
-                date_line = f"Dates: {html.escape(starts)} – {html.escape(ends)}"
+                date_line = f"{html.escape(starts)} – {html.escape(ends)}"
             elif starts:
-                date_line = f"Date: {html.escape(starts)}"
+                date_line = html.escape(starts)
 
             meta_parts = []
             if location:
-                meta_parts.append(f"<span class=\"small-label\">Location</span> {html.escape(location)}")
+                meta_parts.append(f'<span class="small-label">Location</span> {escape_then_linkify(location)}')
             if contact:
-                meta_parts.append(f"<span class=\"small-label\">Contact</span> {html.escape(contact)}")
+                meta_parts.append(f'<span class="small-label">Contact</span> {escape_then_linkify(contact)}')
             if phone:
-                meta_parts.append(f"<span class=\"small-label\">Phone</span> {html.escape(phone)}")
-            meta_html = "<br>".join(meta_parts) if meta_parts else ""
+                meta_parts.append(f'<span class="small-label">Phone</span> {html.escape(phone)}')
+            meta_html = "<br>\n".join(meta_parts)
 
             body_html = render_body(body_raw)
             image_html = build_image_html(image, title)
@@ -878,16 +880,14 @@ def compile_events(issue_date: str) -> int:
                   {html.escape(title)}
                 </div>
                 {f'<div class="date-line" style="padding-top:8px;">{date_line}</div>' if date_line else ''}
-                <div class="body-copy" style="padding-top:10px;">
-                  {body_html}
-                </div>
+                {f'<div class="body-copy" style="padding-top:10px;">{body_html}</div>' if body_html else ''}
                 {f'<div class="body-copy" style="padding-top:10px;">{meta_html}</div>' if meta_html else ''}
-{image_html if image_html else ''}
+                {image_html}
               </td>
             </tr>
 
             <tr>
-              <td style="padding:0; background-color:#{'fdf9f3' if row_class == 'row-white' else 'f7f2e8'};">
+              <td style="padding:0; background-color:{row_bg};">
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
                   <tr>
                     <td class="divider">&nbsp;</td>
@@ -898,7 +898,26 @@ def compile_events(issue_date: str) -> int:
                 """.rstrip()
             )
 
-    full_html = build_full_html(issue_date=issue_date, toc_html=toc_html, section_blocks=section_blocks)
+    if not section_blocks:
+        section_blocks.append(
+            """
+            <tr>
+              <td class="row-white mobile-pad" style="padding:22px 28px;">
+                <div class="body-copy">
+                  No events scheduled for this period.
+                </div>
+              </td>
+            </tr>
+            """.rstrip()
+        )
+
+    full_html = build_full_html(
+        issue_date=issue_date,
+        toc_html=toc_html,
+        section_blocks=section_blocks,
+        top_callout=callout or DEFAULT_TOP_CALLOUT,
+        bottom_callout=bottom_callout or DEFAULT_BOTTOM_CALLOUT,
+    )
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     try:
@@ -916,5 +935,21 @@ def compile_events(issue_date: str) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compile events HTML output.")
     parser.add_argument("--issue-date", required=True, help="Issue date YYYY-MM-DD")
+    parser.add_argument(
+        "--callout",
+        default=None,
+        help="Optional top callout box text override.",
+    )
+    parser.add_argument(
+        "--bottom-callout",
+        default=None,
+        help="Optional bottom callout box text override.",
+    )
     args = parser.parse_args()
-    sys.exit(compile_events(args.issue_date))
+    sys.exit(
+        compile_events(
+            issue_date=args.issue_date,
+            callout=args.callout,
+            bottom_callout=args.bottom_callout,
+        )
+    )
