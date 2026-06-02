@@ -1,5 +1,3 @@
-File 2 — System/ENGINEER_GUIDE.md (new)
-text
 # Chuck's List Builder — Engineer Guide
 
 > The technical almanac. Read this before touching any file in the codebase.

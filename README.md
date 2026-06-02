@@ -27,7 +27,7 @@ and accessible to elderly readers.
 
 | Document | Purpose | Last Updated |
 |---|---|---|
-| [System/SYSTEM_README.md](System/README_README.md) | Operator guide — how to run the pipeline, CLI flags, CSV contracts, section ordering, error message reference | 2026-06-02 |
+| [System/SYSTEM_README.md](System/SYSTEM_README.md) | Operator guide — how to run the pipeline, CLI flags, CSV contracts, section ordering, error message reference | 2026-06-02 |
 | [System/ENGINEER_GUIDE.md](System/ENGINEER_GUIDE.md) | Developer reference — architecture contracts, bug history, open punch list, what not to break | 2026-06-02 |
 
 > Both documents must be updated as part of any commit that changes pipeline
@@ -71,7 +71,7 @@ ChucksList_Builder/
 ├── ChucksEvents/                 Events pipeline + Zoho staging
 ├── Images/                       Shared images (local only, never committed)
 └── System/
-    ├── README.md                 Operator guide
+    ├── SYSTEM_README.md          Operator guide (System/SYSTEM_README.md)
     ├── ENGINEER_GUIDE.md         Developer reference
     └── logs/                     Build logs (local only)
 
