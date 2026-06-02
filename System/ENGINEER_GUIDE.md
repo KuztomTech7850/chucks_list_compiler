@@ -31,4 +31,4 @@ REPLACE those last two rows with:
 | `System/logs/` | Timestamped build logs written by `--log-to-file`; git-ignored |
 
 (Note: SYSTEM_README.md and ENGINEER_GUIDE.md rows likely already exist
-in your table — verify and deduplicate if so. The new row is BUG_LIST.md.)
+in your table — verify and deduplicate if so. The new row is BUG_LIST.md.) Update

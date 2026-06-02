@@ -303,4 +303,4 @@
 ***
 
 *Chuck's List Builder — Bug Ledger*
-*Append new entries at the bottom of the appropriate section. Never delete resolved entries.*
+*Append new entries at the bottom of the appropriate section. Never delete resolved entries.* Update
