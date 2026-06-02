@@ -48,5 +48,3 @@ touching a CSV or command line.
 - Email HTML generated from database queries
 - CSV pipeline retired when server version is proven stable
 - Timeline: several months out
-
-Update

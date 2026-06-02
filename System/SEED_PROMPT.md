@@ -195,5 +195,3 @@ minimum contracts.
 ---
 
 *End of seed prompt. Next agent: begin at §6, Step 1.*
-
-"One alignment note on the original prompt worth carrying forward: the README.md currently has a broken internal link — [System/SYSTEM_README.md](System/README_README.md) — that points to a nonexistent path. That's a Goal 1 fix for the working agent to catch in Step 2."

@@ -105,4 +105,4 @@ For the full bug and punch list, see [System/BUG_LIST.md](System/BUG_LIST.md).
 ***
 
 *Chuck's List — Montezuma County, Colorado.*
-*Pipeline maintained by KuztomTech. Questions? See the operator guide or open an issue.* Update
+*Pipeline maintained by KuztomTech. Questions? See the operator guide or open an issue.*
