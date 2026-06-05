@@ -392,6 +392,43 @@ touching a CSV or command line.
 - CSV pipeline retired when server version is proven stable
 - Timeline: several months out
 
+## The Network Integration (Future Layer)
+
+Chuck's List is one of the founding use cases for **The Network** — an open,
+decentralized platform for community coordination built on AT Protocol,
+Arweave, and modular governance contracts.
+
+This pipeline will not change in Phase 2 or Phase 3 to accommodate The
+Network. When Network integration is introduced, it layers on top of the
+existing pipeline — it does not replace any part of it.
+
+### What The Network will add
+
+| Capability | What it means for Chuck's List |
+|---|---|
+| **Signed submission records** | Each bulletin or event submission becomes a signed ATProto record in a contributor's personal data repository — cryptographically tied to the submitter, portable, and independently verifiable |
+| **Tamper-evident archive** | Final compiled editions are hashed and anchored to Arweave, creating a permanent, immutable record of every issue — no issue can be silently edited after distribution |
+| **Community trust layer** | Listings can carry reputation signals from the community (verified local business, trusted neighbor) without requiring a centralized moderation authority |
+| **Web board (Phase 4+)** | The Phase 3 GUI naturally extends to a public-facing community board where listings live as browsable records — not just email — while the email pipeline continues alongside it |
+
+### What does not change
+
+- The CSV intake process and two-pipeline architecture remain unchanged
+- Zoho Campaigns delivery is not replaced — The Network board runs alongside it
+- Chuck McAfee's editorial control over what goes out is fully preserved
+- No personal data from contributors is exposed or stored on The Network
+  without explicit opt-in from the submitter
+
+### Status
+
+> **Not started.** The Network is in architectural definition. This section
+> documents the intended integration path so it informs Phase 3 GUI design
+> decisions — particularly around the submission form, the database schema,
+> and the web output format.
+>
+> When The Network integration thread is opened, a link to the relevant
+> spec will be added here.
+
 ***
 
 ## Guiding Principles
