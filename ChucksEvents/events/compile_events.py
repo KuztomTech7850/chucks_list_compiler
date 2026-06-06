@@ -1091,11 +1091,10 @@ def compile_events(
     section_blocks: list[str] = []
     alternating_index = 0
 
-    for section_name, items in grouped_sections:
-        section_id = SECTION_ID_MAP[section_name]
+        for section_name, items in grouped_sections:
         section_blocks.append(
             f"""
-            <tr id="{section_id}">
+            <tr id="{SECTION_ANCHORS[section_name]}">
               <td class="section-label mobile-pad" style="padding:10px 28px;">
                 {html.escape(section_name)}
               </td>
@@ -1104,92 +1103,53 @@ def compile_events(
         )
 
         for row_num, row in items:
-            title    = (row.get("Title")    or "").strip()
-            body_raw = (row.get("Body")     or "").strip()
-            location = (row.get("Location") or "").strip()
-            contact  = (row.get("Contact")  or "").strip()
-            phone    = (row.get("Phone")    or "").strip()
-            image    = (row.get("Image")    or "").strip()
+            title    = (row.get("Title") or "").strip()
+            body_raw = (row.get("Body")  or "").strip()
+            image    = (row.get("Image") or "").strip()
+
+            if not title:
+                print(
+                    f"  [WARN] Row {row_num}: field 'Title' is empty. "
+                    "Fix: enter a title. Item skipped.",
+                    file=sys.stderr,
+                )
+                continue
 
             row_class = "row-white" if alternating_index % 2 == 0 else "row-alt"
-            row_bg    = "#fdf9f3" if row_class == "row-white" else "#f7f2e8"
             alternating_index += 1
-
-            meta_parts: list[str] = []
-            if location:
-                meta_parts.append(
-                    f'<span class="small-label">Location</span> {escape_then_linkify(location)}'
-                )
-            if contact:
-                meta_parts.append(
-                    f'<span class="small-label">Contact</span> {escape_then_linkify(contact)}'
-                )
-            if phone:
-                meta_parts.append(
-                    f'<span class="small-label">Phone</span> {html.escape(phone)}'
-                )
-            meta_html = "<br>\n".join(meta_parts)
 
             body_html  = render_body(body_raw)
             image_html = build_image_html(image, title)
-            anchor     = item_anchor_map[(section_name, row_num)]
+            item_anchor = item_anchor_map.get((section_name, row_num), "")
 
             section_blocks.append(
-                f"""
-            <tr id="{anchor}">
-              <td class="{row_class} mobile-pad" style="padding:22px 28px;">
-                <div class="section-title">
-                  {html.escape(title)}
-                </div>
-                {f'<div class="body-copy" style="padding-top:10px;">{body_html}</div>' if body_html else ''}
-                {f'<div class="body-copy meta-line" style="padding-top:10px;">{meta_html}</div>' if meta_html else ''}
-                {image_html}
-              </td>
-            </tr>
-
-            <tr>
-              <td style="padding:0; background-color:{row_bg};">
-                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-                  <tr>
-                    <td class="divider">&nbsp;</td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-                """.rstrip()
+                render_entry_row(
+                    title=title,
+                    body_html=body_html,
+                    image_html=image_html,
+                    row_class=row_class,
+                    item_anchor=item_anchor,
+                )
             )
 
-    if not section_blocks:
-        section_blocks.append(
-            """
-            <tr>
-              <td class="row-white mobile-pad" style="padding:22px 28px;">
-                <div class="body-copy">
-                  No events scheduled for this period.
-                </div>
-              </td>
-            </tr>
-            """.rstrip()
-        )
+    full_html = build_full_html(
+        issue_date=issue_date,
+        toc_html=toc_html,
+        section_blocks=section_blocks,
+        top_callout=top_callout or DEFAULT_TOP_CALLOUT,
+        bottom_callout=bottom_callout or DEFAULT_BOTTOM_CALLOUT,
+    )
 
-      full_html = build_full_html(
-          issue_date=issue_date,
-          toc_html=toc_html,
-          section_blocks=section_blocks,
-          top_callout=callout or DEFAULT_TOP_CALLOUT,
-          bottom_callout=bottom_callout or DEFAULT_BOTTOM_CALLOUT,
-      )
+    final_output = PROJ_DIR / "chucks_bulletin_final_output.html"
 
-      final_output = PROJ_DIR / "chucks_events_final_output.html"
+    try:
+        final_output.write_text(full_html, encoding="utf-8")
+        print(f"  [OK] Bulletin HTML written: {final_output}")
+    except Exception as exc:
+        print(f"ERROR writing output: {exc}", file=sys.stderr)
+        return 1
 
-      try:
-          final_output.write_text(full_html, encoding="utf-8")
-          print(f"  [OK] Events HTML written: {final_output}")
-      except Exception as exc:
-          print(f"ERROR writing output: {exc}", file=sys.stderr)
-          return 1
-
-      return 0
+    return 0
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compile events HTML output.")

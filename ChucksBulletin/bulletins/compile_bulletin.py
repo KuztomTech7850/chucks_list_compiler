@@ -1015,7 +1015,7 @@ def build_full_html(
 # Compile entrypoint
 # ---------------------------------------------------------------------------
 
-ddef compile_bulletin(
+def compile_bulletin(
     issue_date: str,
     top_callout: str | None = None,
     bottom_callout: str | None = None,
@@ -1052,7 +1052,7 @@ ddef compile_bulletin(
     section_blocks: list[str] = []
     alternating_index = 0
 
-    for section_name, items in grouped_sections:
+        for section_name, items in grouped_sections:
         section_blocks.append(
             f"""
             <tr id="{SECTION_ANCHORS[section_name]}">
@@ -1093,11 +1093,11 @@ ddef compile_bulletin(
                 )
             )
 
-        full_html = build_full_html(
+    full_html = build_full_html(
         issue_date=issue_date,
         toc_html=toc_html,
         section_blocks=section_blocks,
-        top_callout=callout or DEFAULT_TOP_CALLOUT,
+        top_callout=top_callout or DEFAULT_TOP_CALLOUT,
         bottom_callout=bottom_callout or DEFAULT_BOTTOM_CALLOUT,
     )
 
